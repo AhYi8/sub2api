@@ -1324,8 +1324,27 @@
           </p>
         </div>
         <div>
-          <label class="input-label">{{ t('admin.accounts.apiKeyRequired') }}</label>
+          <label class="input-label">
+            {{ t('admin.accounts.apiKeyRequired') }}
+            <span
+              v-if="isCNPlatform && parsedApiKeyCount > 1"
+              class="ml-1 rounded-full bg-blue-500 px-2 py-0.5 text-xs text-white"
+            >
+              {{ t('admin.accounts.oauth.keysCount', { count: parsedApiKeyCount }) }}
+            </span>
+          </label>
+          <!-- 国产平台：一行一条 API Key，多条时批量创建账号并自动加序号 -->
+          <textarea
+            v-if="isCNPlatform"
+            v-model="apiKeyValue"
+            rows="3"
+            required
+            class="input resize-y font-mono"
+            :placeholder="apiKeyValuePlaceholder"
+            data-testid="cn-api-keys-input"
+          ></textarea>
           <input
+            v-else
             v-model="apiKeyValue"
             type="password"
             required
@@ -1333,6 +1352,20 @@
             :placeholder="apiKeyValuePlaceholder"
           />
           <p v-if="apiKeyHint" class="input-hint">{{ apiKeyHint }}</p>
+          <p v-if="isCNPlatform" class="input-hint">{{ t('admin.accounts.cnProviders.apiKeyBatchHint') }}</p>
+          <p
+            v-if="isCNPlatform && parsedApiKeyCount > 1"
+            class="input-hint text-blue-600 dark:text-blue-400"
+          >
+            {{ t('admin.accounts.oauth.batchCreateAccounts', { count: parsedApiKeyCount }) }}
+          </p>
+          <!-- 批量创建部分失败时的错误列表，保留输入便于修正后重试 -->
+          <div
+            v-if="apiKeyBatchError"
+            class="rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-700 dark:bg-red-900/30"
+          >
+            <p class="whitespace-pre-line text-sm text-red-600 dark:text-red-400">{{ apiKeyBatchError }}</p>
+          </div>
         </div>
 
         <!-- 上游倍率自动探测：全部 API-key 平台可用（所在区块已限定 apikey 类型） -->
@@ -3821,6 +3854,7 @@ import { useGrokOAuth } from '@/composables/useGrokOAuth'
 import type {
   Proxy,
   AdminGroup,
+  Account,
   AccountPlatform,
   AccountType,
   CheckMixedChannelResponse,
@@ -4046,6 +4080,17 @@ const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_acco
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
+// 国产平台多行批量输入：一行一条 API Key，trim 后过滤空行。
+// 与 Grok RT 批量先例一致：不去重、保持输入顺序（重复密钥由后端各自建号）。
+const parsedApiKeys = computed(() =>
+  apiKeyValue.value
+    .split('\n')
+    .map((key) => key.trim())
+    .filter((key) => key.length > 0)
+)
+const parsedApiKeyCount = computed(() => parsedApiKeys.value.length)
+// 批量创建部分失败时的错误列表文案（保留弹窗展示，重新提交时清空）
+const apiKeyBatchError = ref('')
 const upstreamBillingAutoProbeEnabled = ref(true)
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）账号类型、API 协议与端点 ──
@@ -4183,7 +4228,8 @@ const syncPreviewCredentials = computed(() => {
     platform: form.platform,
     type: form.type,
     base_url: baseUrl || undefined,
-    api_key: apiKeyValue.value,
+    // 国产平台多行批量输入时，预览凭据只取第一条有效密钥（整段多行文本无法用于鉴权）
+    api_key: isCNPlatform.value ? (parsedApiKeys.value[0] ?? '') : apiKeyValue.value,
     ...(modelMapping ? { model_mapping: modelMapping } : {})
   }
 })
@@ -4675,6 +4721,8 @@ watch(
 watch(
   () => form.platform,
   (newPlatform) => {
+    // 批量创建错误列表仅对当前平台有效，切换平台后清空避免过期错误残留展示
+    apiKeyBatchError.value = ''
     // Reset base URL based on platform
     if (newPlatform === 'kimi' || newPlatform === 'zhipu' || newPlatform === 'deepseek') {
       apiKeyBaseUrl.value = defaultCNBaseUrl(newPlatform, accountMode.value, apiProtocol.value)
@@ -5079,8 +5127,12 @@ const ensureAntigravityMixedChannelConfirmed = async (onConfirm: () => Promise<v
   }
 }
 
-const submitCreateAccount = async (payload: CreateAccountRequest) => {
-  submitting.value = true
+// 静默创建单个账号（含模型同步 / 上游倍率探测等后置动作），不弹全局提示、不关弹窗。
+// 单条提交与国产平台多行批量循环共用，保证两条路径的创建行为完全一致。
+// 返回 account 表示成功；返回原始错误与可读信息（含 HTTP 状态供调用方分支处理）表示失败。
+const createAccountSilently = async (
+  payload: CreateAccountRequest
+): Promise<{ account: Account } | { error: any; message: string }> => {
   try {
     const account = await adminAPI.accounts.create(withAntigravityConfirmFlag(payload))
     const modelMapping = payload.credentials.model_mapping
@@ -5113,21 +5165,70 @@ const submitCreateAccount = async (payload: CreateAccountRequest) => {
         appStore.showWarning(t('admin.accounts.upstreamBilling.probeFailed'))
       }
     }
+    return { account }
+  } catch (error: any) {
+    return {
+      error,
+      message: error.response?.data?.message || error.response?.data?.detail || t('admin.accounts.failedToCreate')
+    }
+  }
+}
+
+// 国产平台多行 API Key 批量创建：逐条静默创建并统计成败。
+// 全部成功：提示并关闭弹窗；部分成功：保留弹窗与输入，展示逐条错误便于修正重试（与 Grok RT 批量一致）。
+const submitCNApiKeyBatch = async (payloads: CreateAccountRequest[]) => {
+  submitting.value = true
+  apiKeyBatchError.value = ''
+  try {
+    let successCount = 0
+    const errors: string[] = []
+    for (let i = 0; i < payloads.length; i++) {
+      const result = await createAccountSilently(payloads[i])
+      if ('account' in result) {
+        successCount++
+      } else {
+        errors.push(t('admin.accounts.oauth.keyAuthFailed', { index: i + 1, error: result.message }))
+      }
+    }
+    const failedCount = payloads.length - successCount
+    if (successCount > 0 && failedCount === 0) {
+      appStore.showSuccess(t('admin.accounts.oauth.batchSuccess', { count: successCount }))
+      emit('created')
+      handleClose()
+    } else if (successCount > 0) {
+      appStore.showWarning(t('admin.accounts.oauth.batchPartialSuccess', { success: successCount, failed: failedCount }))
+      apiKeyBatchError.value = errors.join('\n')
+      emit('created')
+    } else {
+      apiKeyBatchError.value = errors.join('\n')
+      appStore.showError(t('admin.accounts.oauth.batchFailed'))
+    }
+  } finally {
+    submitting.value = false
+  }
+}
+
+const submitCreateAccount = async (payload: CreateAccountRequest) => {
+  submitting.value = true
+  try {
+    const result = await createAccountSilently(payload)
+    if ('error' in result) {
+      if (result.error?.response?.status === 409 && result.error?.response?.data?.error === 'mixed_channel_warning' && needsMixedChannelCheck(form.platform)) {
+        openMixedChannelDialog({
+          message: result.error?.response?.data?.message,
+          onConfirm: async () => {
+            antigravityMixedChannelConfirmed.value = true
+            await submitCreateAccount(payload)
+          }
+        })
+        return
+      }
+      appStore.showError(result.message)
+      return
+    }
     appStore.showSuccess(t('admin.accounts.accountCreated'))
     emit('created')
     handleClose()
-  } catch (error: any) {
-    if (error.response?.status === 409 && error.response?.data?.error === 'mixed_channel_warning' && needsMixedChannelCheck(form.platform)) {
-      openMixedChannelDialog({
-        message: error.response?.data?.message,
-        onConfirm: async () => {
-          antigravityMixedChannelConfirmed.value = true
-          await submitCreateAccount(payload)
-        }
-      })
-      return
-    }
-    appStore.showError(error.response?.data?.message || error.response?.data?.detail || t('admin.accounts.failedToCreate'))
   } finally {
     submitting.value = false
   }
@@ -5155,6 +5256,7 @@ const resetForm = () => {
   adaptiveBaseUrls.value = { chat_completions: '', anthropic: '', responses: '' }
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
   apiKeyValue.value = ''
+  apiKeyBatchError.value = ''
   upstreamRequestIdHeader.value = ''
   upstreamBillingAutoProbeEnabled.value = true
   editQuotaLimit.value = null
@@ -5251,6 +5353,7 @@ const resetForm = () => {
 
 const handleClose = () => {
   antigravityMixedChannelConfirmed.value = false
+  apiKeyBatchError.value = ''
   clearMixedChannelDialog()
   emit('close')
 }
@@ -5599,8 +5702,15 @@ const handleSubmit = async () => {
   }
 
   // For apikey type, create directly
-  if (!apiKeyValue.value.trim()) {
+  // 国产平台（kimi/zhipu/deepseek）为多行批量输入：一行一条密钥；其余平台维持单值输入
+  const apiKeys = isCNPlatform.value ? parsedApiKeys.value : [apiKeyValue.value.trim()]
+  if (apiKeys.length === 0 || !apiKeys[0]) {
     appStore.showError(t('admin.accounts.pleaseEnterApiKey'))
+    return
+  }
+  // 批量创建的账号名自动加「 #序号」，用户填写的名称是序号前缀，多条时必填
+  if (apiKeys.length > 1 && !form.name.trim()) {
+    appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
     return
   }
 
@@ -5614,10 +5724,9 @@ const handleSubmit = async () => {
           ? 'https://api.x.ai/v1'
           : 'https://api.anthropic.com'
 
-  // Build credentials with optional model mapping
+  // Build credentials with optional model mapping（api_key 为逐条差异字段，由各 payload 分别写入）
   const credentials: Record<string, unknown> = {
-    base_url: apiKeyBaseUrl.value.trim() || defaultBaseUrl,
-    api_key: apiKeyValue.value.trim()
+    base_url: apiKeyBaseUrl.value.trim() || defaultBaseUrl
   }
   if (form.platform === 'gemini') {
     credentials.tier_id = geminiTierAIStudio.value
@@ -5702,13 +5811,23 @@ const handleSubmit = async () => {
   form.credentials = credentials
   const extra = buildAnthropicExtra(buildOpenAIExtra())
 
-  await doCreateAccount({
+  // 单条：与既有路径完全一致；批量（仅国产平台可达）：逐条创建并按「名称 #序号」命名
+  const buildApiKeyPayload = (apiKey: string, name?: string): CreateAccountRequest => ({
     ...form,
+    name: name ?? form.name,
+    credentials: { ...credentials, api_key: apiKey },
     group_ids: form.group_ids,
     extra: withUpstreamRequestIdHeader(extra),
     upstream_billing_probe_enabled: upstreamBillingAutoProbeEnabled.value,
     auto_pause_on_expired: autoPauseOnExpired.value
   })
+
+  if (apiKeys.length === 1) {
+    await doCreateAccount(buildApiKeyPayload(apiKeys[0]))
+    return
+  }
+
+  await submitCNApiKeyBatch(apiKeys.map((apiKey, index) => buildApiKeyPayload(apiKey, `${form.name} #${index + 1}`)))
 }
 
 const goBackToBasicInfo = () => {

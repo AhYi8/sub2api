@@ -7,6 +7,8 @@ const {
   probeUpstreamBillingMock,
   syncUpstreamModelsMock,
   showWarningMock,
+  showErrorMock,
+  showSuccessMock,
   importCodexSessionMock,
   createOpenAICodexPATMock,
   authIsSimpleMode,
@@ -15,6 +17,8 @@ const {
   probeUpstreamBillingMock: vi.fn(),
   syncUpstreamModelsMock: vi.fn(),
   showWarningMock: vi.fn(),
+  showErrorMock: vi.fn(),
+  showSuccessMock: vi.fn(),
   importCodexSessionMock: vi.fn(),
   createOpenAICodexPATMock: vi.fn(),
   authIsSimpleMode: { value: true },
@@ -22,8 +26,8 @@ const {
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
-    showError: vi.fn(),
-    showSuccess: vi.fn(),
+    showError: showErrorMock,
+    showSuccess: showSuccessMock,
     showWarning: showWarningMock,
   }),
 }))
@@ -64,7 +68,11 @@ vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
   return {
     ...actual,
-    useI18n: () => ({ t: (key: string) => key }),
+    // 带插值参数时返回 key + JSON 参数，便于对序号、错误信息等内容做强断言
+    useI18n: () => ({
+      t: (key: string, params?: Record<string, unknown>) =>
+        params ? `${key}:${JSON.stringify(params)}` : key,
+    }),
   }
 })
 
@@ -405,7 +413,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'Kimi')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('Kimi adaptive')
-    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-kimi')
+    await wrapper.get('[data-testid="cn-api-keys-input"]').setValue('sk-kimi')
 
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
@@ -428,7 +436,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await selectButtonByText(wrapper, 'Kimi')
     await selectButtonByText(wrapper, 'admin.accounts.cnProviders.accountMode.coding')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('Kimi coding')
-    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-kimi-coding')
+    await wrapper.get('[data-testid="cn-api-keys-input"]').setValue('sk-kimi-coding')
 
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
@@ -452,7 +460,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await wrapper
       .get('[data-testid="cn-adaptive-base-url-chat_completions"]')
       .setValue('https://relay.example.com/v1')
-    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-relay')
+    await wrapper.get('[data-testid="cn-api-keys-input"]').setValue('sk-relay')
 
     expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('syncCredentials')).toMatchObject({
       platform: 'kimi',
@@ -585,5 +593,167 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await flushPromises()
 
     expect(createOpenAICodexPATMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
+  })
+})
+
+describe('CreateAccountModal CN provider API key batch creation', () => {
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    createAccountMock.mockReset().mockResolvedValue({ id: 42, platform: 'zhipu', type: 'apikey' })
+    probeUpstreamBillingMock.mockReset().mockResolvedValue({})
+    syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], metadata: {} })
+    showWarningMock.mockReset()
+    showErrorMock.mockReset()
+    showSuccessMock.mockReset()
+  })
+
+  async function submitCnApiKeyAccount(
+    platform: 'Kimi' | 'Zhipu GLM' | 'DeepSeek',
+    apiKeyInput: string,
+    accountName?: string
+  ) {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, platform)
+    if (accountName !== undefined) {
+      await wrapper.get('form#create-account-form input[type="text"]').setValue(accountName)
+    }
+    await wrapper.get('[data-testid="cn-api-keys-input"]').setValue(apiKeyInput)
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    return wrapper
+  }
+
+  it('批量输入多行密钥时逐条创建并按「名称 #序号」命名（空行与首尾空白被过滤）', async () => {
+    await submitCnApiKeyAccount('Zhipu GLM', 'key-one\n\n  key-two  \n', '智谱批量')
+
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    const [first, second] = createAccountMock.mock.calls.map((call) => call[0])
+    expect(first.name).toBe('智谱批量 #1')
+    expect(second.name).toBe('智谱批量 #2')
+    expect(first.credentials.api_key).toBe('key-one')
+    expect(second.credentials.api_key).toBe('key-two')
+    // 除 api_key 外的凭据字段来自同一表单配置，逐条共享
+    expect(first.credentials).toMatchObject({ account_mode: 'payg', api_protocol: 'adaptive' })
+    expect(second.credentials).toMatchObject({ account_mode: 'payg', api_protocol: 'adaptive' })
+    expect(showSuccessMock).toHaveBeenCalledWith('admin.accounts.oauth.batchSuccess:{"count":2}')
+  })
+
+  it.each(['Kimi', 'DeepSeek'] as const)('%s 平台同样支持一行一条批量创建', async (platform) => {
+    await submitCnApiKeyAccount(platform, 'sk-a\nsk-b', `${platform} 批量`)
+
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    expect(createAccountMock.mock.calls[0]?.[0]?.name).toBe(`${platform} 批量 #1`)
+    expect(createAccountMock.mock.calls[1]?.[0]?.name).toBe(`${platform} 批量 #2`)
+  })
+
+  it('单条输入不加序号且仅创建一个账号', async () => {
+    await submitCnApiKeyAccount('Zhipu GLM', 'only-key', '智谱单条')
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.name).toBe('智谱单条')
+    expect(showSuccessMock).toHaveBeenCalledWith('admin.accounts.accountCreated')
+  })
+
+  it('批量输入但账号名称留空时提示并阻止提交', async () => {
+    await submitCnApiKeyAccount('Zhipu GLM', 'key-a\nkey-b', '')
+
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(showErrorMock).toHaveBeenCalledWith('admin.accounts.pleaseEnterAccountName')
+  })
+
+  it('批量输入多行密钥时渲染计数徽章与批量创建提示', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Zhipu GLM')
+    await wrapper.get('[data-testid="cn-api-keys-input"]').setValue('key-a')
+
+    // 单条时不显示批量提示
+    expect(wrapper.text()).not.toContain('admin.accounts.oauth.keysCount')
+    expect(wrapper.text()).not.toContain('admin.accounts.oauth.batchCreateAccounts')
+
+    await wrapper.get('[data-testid="cn-api-keys-input"]').setValue('key-a\nkey-b')
+    expect(wrapper.text()).toContain('admin.accounts.oauth.keysCount:{"count":2}')
+    expect(wrapper.text()).toContain('admin.accounts.oauth.batchCreateAccounts:{"count":2}')
+  })
+
+  it('重复密钥不去重、保持输入顺序', async () => {
+    await submitCnApiKeyAccount('Zhipu GLM', 'dup-key\ndup-key', '重复密钥')
+
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials.api_key).toBe('dup-key')
+    expect(createAccountMock.mock.calls[1]?.[0]?.credentials.api_key).toBe('dup-key')
+
+    createAccountMock.mockClear()
+    await submitCnApiKeyAccount('DeepSeek', 'key-b\nkey-a', '顺序校验')
+    expect(createAccountMock.mock.calls.map((call) => call[0]?.credentials?.api_key)).toEqual(['key-b', 'key-a'])
+  })
+
+  it('全部为空行时提示输入 API Key 且不发请求', async () => {
+    await submitCnApiKeyAccount('Kimi', '  \n\n \n', '空输入')
+
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(showErrorMock).toHaveBeenCalledWith('admin.accounts.pleaseEnterApiKey')
+  })
+
+  it('全部失败时提示批量失败并保留弹窗与错误列表', async () => {
+    createAccountMock
+      .mockRejectedValueOnce({ response: { status: 500, data: { detail: 'first boom' } } })
+      .mockRejectedValueOnce({ response: { status: 500, data: { detail: 'second boom' } } })
+
+    const wrapper = await submitCnApiKeyAccount('Zhipu GLM', 'key-a\nkey-b', '智谱全败')
+
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    expect(showErrorMock).toHaveBeenCalledWith('admin.accounts.oauth.batchFailed')
+    expect(wrapper.emitted('created')).toBeUndefined()
+    expect(wrapper.emitted('close')).toBeUndefined()
+    // 错误列表带序号与错误信息，按输入行序展示
+    expect(wrapper.text()).toContain('admin.accounts.oauth.keyAuthFailed:{"index":1,"error":"first boom"}')
+    expect(wrapper.text()).toContain('admin.accounts.oauth.keyAuthFailed:{"index":2,"error":"second boom"}')
+  })
+
+  it('部分失败时提示部分成功并保留弹窗、输入与错误列表', async () => {
+    createAccountMock
+      .mockResolvedValueOnce({ id: 42, platform: 'zhipu', type: 'apikey' })
+      .mockRejectedValueOnce({ response: { status: 500, data: { detail: 'boom' } } })
+
+    const wrapper = await submitCnApiKeyAccount('Zhipu GLM', 'key-a\nkey-b', '智谱混合')
+
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    expect(showWarningMock).toHaveBeenCalledWith('admin.accounts.oauth.batchPartialSuccess:{"success":1,"failed":1}')
+    expect(wrapper.emitted('created')).toHaveLength(1)
+    // 弹窗未关闭、输入保留，便于修正失败密钥后重试
+    expect(wrapper.emitted('close')).toBeUndefined()
+    expect((wrapper.get('[data-testid="cn-api-keys-input"]').element as HTMLTextAreaElement).value).toBe('key-a\nkey-b')
+    expect(wrapper.text()).toContain('admin.accounts.oauth.keyAuthFailed:{"index":2,"error":"boom"}')
+  })
+
+  it('失败后重新提交成功会清空错误列表', async () => {
+    createAccountMock.mockRejectedValueOnce({ response: { status: 500, data: { detail: 'boom' } } })
+    const wrapper = await submitCnApiKeyAccount('Zhipu GLM', 'key-a\nkey-b', '智谱重试')
+    expect(wrapper.text()).toContain('admin.accounts.oauth.keyAuthFailed')
+
+    // 重新提交全部成功：错误列表被清空，弹窗关闭
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('admin.accounts.oauth.keyAuthFailed')
+    expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+
+  it('切换平台后批量错误列表不再展示', async () => {
+    createAccountMock.mockRejectedValueOnce({ response: { status: 500, data: { detail: 'boom' } } })
+    const wrapper = await submitCnApiKeyAccount('Zhipu GLM', 'key-a\nkey-b', '智谱残留')
+    expect(wrapper.text()).toContain('admin.accounts.oauth.keyAuthFailed')
+
+    await selectButtonByText(wrapper, 'Kimi')
+
+    expect(wrapper.text()).not.toContain('admin.accounts.oauth.keyAuthFailed')
+  })
+
+  it('非国产平台仍使用单行密码输入（回归保护）', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'admin.accounts.claudeConsole')
+
+    expect(wrapper.find('[data-testid="cn-api-keys-input"]').exists()).toBe(false)
+    expect(wrapper.find('form#create-account-form input[type="password"]').exists()).toBe(true)
   })
 })

@@ -153,6 +153,7 @@ export default {
         balanceProbeTooltip: 'Query the provider balance endpoint for the account balance',
         balanceLow: 'Insufficient balance',
         noBalanceEndpoint: 'This platform has no balance query endpoint',
+        apiKeyBatchHint: 'Batch creation supported: one API Key per line; multiple keys create multiple accounts, each auto-named "Name #index"',
       },
       types: {
         oauth: 'OAuth',

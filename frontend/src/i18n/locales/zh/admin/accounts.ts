@@ -356,6 +356,7 @@ export default {
         balanceProbeTooltip: '请求供应商余额端点，查询账户余额',
         balanceLow: '余额不足',
         noBalanceEndpoint: '该平台暂无余额查询接口',
+        apiKeyBatchHint: '支持批量创建：一行一条 API Key；多条时将批量创建账号，账号名自动按「名称 #序号」命名',
       },
       types: {
         oauth: 'OAuth',
