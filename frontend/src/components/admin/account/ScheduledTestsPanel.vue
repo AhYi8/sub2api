@@ -20,6 +20,87 @@
         </button>
       </div>
 
+      <!-- 最近测试结果（含全局计划） -->
+      <div class="rounded-xl border border-gray-200 bg-white dark:border-dark-600 dark:bg-dark-800">
+        <div
+          class="flex cursor-pointer items-center justify-between px-4 py-3"
+          @click="toggleAccountResults"
+        >
+          <div class="text-sm font-medium text-gray-900 dark:text-gray-100">
+            {{ t('admin.scheduledTests.recentResults') }}
+          </div>
+          <Icon
+            name="chevronDown"
+            size="sm"
+            :class="['text-gray-400 transition-transform duration-200', showAccountResults ? 'rotate-180' : '']"
+          />
+        </div>
+        <div v-if="showAccountResults" class="border-t border-gray-100 px-4 py-3 dark:border-dark-700">
+          <div v-if="loadingAccountResults" class="flex items-center justify-center py-4">
+            <Icon name="refresh" size="sm" class="animate-spin text-gray-400" :stroke-width="2" />
+            <span class="ml-2 text-xs text-gray-500">{{ t('common.loading') }}...</span>
+          </div>
+          <div
+            v-else-if="accountResults.length === 0"
+            class="py-4 text-center text-xs text-gray-500 dark:text-gray-400"
+          >
+            {{ t('admin.scheduledTests.noResults') }}
+          </div>
+          <div v-else class="max-h-64 space-y-2 overflow-y-auto">
+            <div
+              v-for="result in accountResults"
+              :key="result.id"
+              class="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-dark-700 dark:bg-dark-900"
+            >
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                  <span
+                    :class="[
+                      'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
+                      result.status === 'success'
+                        ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-400'
+                        : 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400'
+                    ]"
+                  >
+                    {{ result.status === 'success' ? t('admin.scheduledTests.success') : t('admin.scheduledTests.failed') }}
+                  </span>
+                  <!-- 来源标记：由后端 JOIN 计划表填充，全局计划结果带标记 -->
+                  <span
+                    v-if="result.is_global"
+                    class="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-500/20 dark:text-blue-400"
+                  >
+                    {{ t('admin.scheduledTests.globalBadge') }}
+                  </span>
+                  <span v-if="result.latency_ms > 0" class="text-xs text-gray-500 dark:text-gray-400">
+                    {{ result.latency_ms }}ms
+                  </span>
+                </div>
+                <span class="text-xs text-gray-400">
+                  {{ formatDateTime(result.started_at) }}
+                </span>
+              </div>
+              <div v-if="result.error_message" class="mt-2">
+                <div
+                  class="cursor-pointer text-xs font-medium text-red-600 dark:text-red-400"
+                  @click="toggleResultDetail(result.id)"
+                >
+                  {{ t('admin.scheduledTests.errorMessage') }}
+                  <Icon
+                    name="chevronDown"
+                    size="sm"
+                    :class="['inline transition-transform duration-200', expandedResultIds.has(result.id) ? 'rotate-180' : '']"
+                  />
+                </div>
+                <pre
+                  v-if="expandedResultIds.has(result.id)"
+                  class="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-red-50 p-2 text-xs text-red-700 dark:bg-red-900/20 dark:text-red-300"
+                >{{ result.error_message }}</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Add Plan Form -->
       <div
         v-if="showAddForm"
@@ -503,6 +584,26 @@ const showDeleteConfirm = ref(false)
 const deletingPlan = ref<ScheduledTestPlan | null>(null)
 const editingPlanId = ref<number | null>(null)
 const updating = ref(false)
+
+// 最近测试结果（含全局计划）
+const showAccountResults = ref(false)
+const loadingAccountResults = ref(false)
+const accountResults = ref<ScheduledTestResult[]>([])
+
+const toggleAccountResults = async () => {
+  showAccountResults.value = !showAccountResults.value
+  if (showAccountResults.value && props.accountId && accountResults.value.length === 0) {
+    loadingAccountResults.value = true
+    try {
+      accountResults.value = await adminAPI.scheduledTests.listResultsByAccount(props.accountId, 20)
+    } catch (error: any) {
+      appStore.showError(error?.message || 'Failed to load results')
+      accountResults.value = []
+    } finally {
+      loadingAccountResults.value = false
+    }
+  }
+}
 const editForm = reactive({
   model_id: '' as string,
   cron_expression: '' as string,
@@ -540,6 +641,8 @@ watch(
       expandedResultIds.clear()
       showAddForm.value = false
       showDeleteConfirm.value = false
+      showAccountResults.value = false
+      accountResults.value = []
     }
   }
 )

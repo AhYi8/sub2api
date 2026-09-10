@@ -1196,6 +1196,32 @@ func (r *accountRepository) ListActive(ctx context.Context) ([]service.Account, 
 	return r.accountsToService(ctx, accounts)
 }
 
+// ListGlobalScheduledTestCandidates 返回全局定时测试的候选账号：
+// 所有非禁用账号（含错误/限流/临时不可调度，配合测试成功后的自动恢复）。
+// 通过原生 SQL 轻量查询，只取 id 与 platform，避免加载代理/分组等重数据。
+func (r *accountRepository) ListGlobalScheduledTestCandidates(ctx context.Context) ([]service.ScheduledTestAccount, error) {
+	if r.sql == nil {
+		return nil, errors.New("account repository SQL executor not configured")
+	}
+	rows, err := r.sql.QueryContext(ctx, `
+		SELECT id, platform FROM accounts WHERE status <> $1 ORDER BY id ASC
+	`, service.StatusDisabled)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	accounts := make([]service.ScheduledTestAccount, 0, 64)
+	for rows.Next() {
+		var acc service.ScheduledTestAccount
+		if err := rows.Scan(&acc.ID, &acc.Platform); err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, acc)
+	}
+	return accounts, rows.Err()
+}
+
 func (r *accountRepository) ListOAuthRefreshCandidatePage(ctx context.Context, options service.OAuthRefreshPageOptions) (*service.OAuthRefreshCandidatePage, error) {
 	if r.sql == nil {
 		return nil, errors.New("account repository SQL executor not configured")

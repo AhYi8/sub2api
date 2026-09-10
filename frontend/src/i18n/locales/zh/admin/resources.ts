@@ -37,7 +37,26 @@ export default {
       maxResultsTooltipExample: '例如填写 100，表示最多保存最近 100 次测试结果；第 101 次结果写入后，最早的一条会被清理。',
       maxResultsTooltipRange: '推荐填写范围：一般可填 20 到 200。只关注近期可用性时可填 20-50；需要回看较长时间的波动趋势时可填 100-200。',
       autoRecover: '自动恢复',
-      autoRecoverHelp: '测试成功后自动恢复异常状态的账号'
+      autoRecoverHelp: '测试成功后自动恢复异常状态的账号',
+      recentResults: '最近测试结果（含全局）',
+      globalBadge: '全局',
+      global: {
+        title: '全局定时测试',
+        description: '按周期对系统内所有非禁用账号自动执行连通性测试，可按平台配置测试模型',
+        enabled: '启用全局定时测试',
+        enabledHint: '开启后按下方频率对所有非禁用账号（含错误/限流状态）批量测试',
+        frequency: '执行频率',
+        frequencyHourly: '每小时',
+        frequencyDaily: '每天固定时间',
+        frequencyCustom: '自定义 Cron',
+        frequencyHint: '未配置测试模型的平台账号将被跳过；按服务器时区执行',
+        platformModels: '各平台测试模型',
+        platformModelsHint: '为每个平台填写测试用的模型 ID，留空表示跳过该平台',
+        modelPlaceholder: '如 claude-sonnet-4（留空跳过）',
+        maxResultsHint: '每个账号在全局计划下最多保留的结果条数',
+        unsavedHint: '保存失败，当前为未保存的修改',
+        reload: '重新加载'
+      }
     },
 
     // Proxies Management

@@ -722,8 +722,15 @@ func registerScheduledTestRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		plans.DELETE("/:id", h.Admin.ScheduledTest.Delete)
 		plans.GET("/:id/results", h.Admin.ScheduledTest.ListResults)
 	}
+	// 全局定时测试配置（单一全局计划，account_id IS NULL）
+	global := admin.Group("/scheduled-tests")
+	{
+		global.GET("/global", h.Admin.ScheduledTest.GetGlobal)
+		global.PUT("/global", h.Admin.ScheduledTest.UpdateGlobal)
+	}
 	// Nested under accounts
 	admin.GET("/accounts/:id/scheduled-test-plans", h.Admin.ScheduledTest.ListByAccount)
+	admin.GET("/accounts/:id/scheduled-test-results", h.Admin.ScheduledTest.ListResultsByAccount)
 }
 
 func registerErrorPassthroughRoutes(admin *gin.RouterGroup, h *handler.Handlers) {

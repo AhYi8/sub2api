@@ -37,7 +37,26 @@ export default {
       maxResultsTooltipExample: 'For example, 100 means keeping at most the latest 100 test results. When the 101st result is saved, the oldest one is removed.',
       maxResultsTooltipRange: 'Recommended range: usually 20 to 200. Use 20-50 when you only care about recent health status, or 100-200 if you want a longer trend history.',
       autoRecover: 'Auto Recover',
-      autoRecoverHelp: 'Automatically recover account from error/rate-limited state on successful test'
+      autoRecoverHelp: 'Automatically recover account from error/rate-limited state on successful test',
+      recentResults: 'Recent Results (incl. global)',
+      globalBadge: 'Global',
+      global: {
+        title: 'Global Scheduled Test',
+        description: 'Run connectivity tests on all non-disabled accounts on a schedule, with per-platform test models',
+        enabled: 'Enable global scheduled test',
+        enabledHint: 'When enabled, all non-disabled accounts (including error/rate-limited) are tested at the frequency below',
+        frequency: 'Frequency',
+        frequencyHourly: 'Every hour',
+        frequencyDaily: 'Daily at fixed time',
+        frequencyCustom: 'Custom cron',
+        frequencyHint: 'Accounts on platforms without a configured test model are skipped; schedule runs in server timezone',
+        platformModels: 'Per-platform test models',
+        platformModelsHint: 'Fill in the test model ID for each platform; leave empty to skip that platform',
+        modelPlaceholder: 'e.g. claude-sonnet-4 (empty = skip)',
+        maxResultsHint: 'Max results kept per account under the global plan',
+        unsavedHint: 'Save failed — current edits are not applied',
+        reload: 'Reload'
+      }
     },
 
     // Proxies

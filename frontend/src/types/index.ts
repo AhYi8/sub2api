@@ -2375,8 +2375,11 @@ export interface TotpLogin2FARequest {
 
 export interface ScheduledTestPlan {
   id: number
-  account_id: number
+  /** null 表示全局计划（不绑定账号，按平台模型对所有非禁用账号测试） */
+  account_id: number | null
   model_id: string
+  /** 全局计划：平台 -> 测试模型映射（如 { anthropic: "claude-sonnet-4" }） */
+  platform_models?: Record<string, string>
   cron_expression: string
   enabled: boolean
   max_results: number
@@ -2390,6 +2393,9 @@ export interface ScheduledTestPlan {
 export interface ScheduledTestResult {
   id: number
   plan_id: number
+  account_id?: number | null
+  /** 按账号聚合查询时由后端填充：结果是否来自全局计划 */
+  is_global?: boolean
   status: string
   response_text: string
   error_message: string
@@ -2414,6 +2420,14 @@ export interface UpdateScheduledTestPlanRequest {
   enabled?: boolean
   max_results?: number
   auto_recover?: boolean
+}
+
+export interface UpdateGlobalScheduledTestRequest {
+  cron_expression: string
+  enabled?: boolean
+  max_results?: number
+  auto_recover?: boolean
+  platform_models?: Record<string, string>
 }
 
 // Payment types

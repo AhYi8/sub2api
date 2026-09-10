@@ -8,7 +8,8 @@ import type {
   ScheduledTestPlan,
   ScheduledTestResult,
   CreateScheduledTestPlanRequest,
-  UpdateScheduledTestPlanRequest
+  UpdateScheduledTestPlanRequest,
+  UpdateGlobalScheduledTestRequest
 } from '@/types'
 
 /**
@@ -74,12 +75,44 @@ export async function listResults(planId: number, limit?: number): Promise<Sched
   return data ?? []
 }
 
+/**
+ * 获取全局定时测试配置（单一全局计划）
+ */
+export async function getGlobal(): Promise<ScheduledTestPlan> {
+  const { data } = await apiClient.get<ScheduledTestPlan>('/admin/scheduled-tests/global')
+  return data
+}
+
+/**
+ * 更新全局定时测试配置
+ */
+export async function updateGlobal(req: UpdateGlobalScheduledTestRequest): Promise<ScheduledTestPlan> {
+  const { data } = await apiClient.put<ScheduledTestPlan>('/admin/scheduled-tests/global', req)
+  return data
+}
+
+/**
+ * 按账号列出最近的测试结果（含全局计划产生的结果）
+ */
+export async function listResultsByAccount(accountId: number, limit?: number): Promise<ScheduledTestResult[]> {
+  const { data } = await apiClient.get<ScheduledTestResult[]>(
+    `/admin/accounts/${accountId}/scheduled-test-results`,
+    {
+      params: limit ? { limit } : undefined
+    }
+  )
+  return data ?? []
+}
+
 export const scheduledTestsAPI = {
   listByAccount,
   create,
   update,
   delete: deletePlan,
-  listResults
+  listResults,
+  getGlobal,
+  updateGlobal,
+  listResultsByAccount
 }
 
 export default scheduledTestsAPI
