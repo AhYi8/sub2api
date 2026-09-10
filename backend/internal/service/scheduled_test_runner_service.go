@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -25,6 +26,10 @@ type ScheduledTestRunnerService struct {
 	cfg            *config.Config
 	// accountSrc 提供全局定时测试的候选账号（所有非禁用账号）。
 	accountSrc ScheduledTestAccountSource
+	// globalRunning 进程内互斥标记：高频 cron + 大账号量时单批次可能超过
+	// cron 间隔，ClaimForRun 只防同一到期点重复认领，这里防止上一批次
+	// 未完成时新批次并发测同一账号。
+	globalRunning atomic.Bool
 
 	cron      *cron.Cron
 	startOnce sync.Once
@@ -149,7 +154,15 @@ func (s *ScheduledTestRunnerService) runScheduled() {
 //
 // 执行前先通过 ClaimForRun 原子推进 next_run_at：全局批次最长 30 分钟，
 // 若沿用“执行完再推进”会在批次进行期间被每分钟 tick（或多实例）重复触发。
+// 进程内再用 globalRunning 互斥：高频 cron 下上一批次未完成时，新到期的
+// 批次直接跳过，避免对同一账号并发测试/自动恢复。
 func (s *ScheduledTestRunnerService) runGlobalPlan(plan *ScheduledTestPlan) {
+	if !s.globalRunning.CompareAndSwap(false, true) {
+		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] global plan=%d skipped: previous global batch still running", plan.ID)
+		return
+	}
+	defer s.globalRunning.Store(false)
+
 	now := time.Now()
 	nextRun, err := computeNextRun(plan.CronExpression, now)
 	if err != nil {

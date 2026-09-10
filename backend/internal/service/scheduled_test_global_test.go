@@ -41,6 +41,43 @@ func (s *stubGlobalPlanRepo) Update(ctx context.Context, plan *ScheduledTestPlan
 	return plan, nil
 }
 
+// claimRecorder 记录 ClaimForRun 调用，用于断言批次互斥行为。
+type claimRecorder struct {
+	stubGlobalPlanRepo
+	claims []int64
+}
+
+func (s *claimRecorder) ClaimForRun(ctx context.Context, id int64, now time.Time, nextRunAt time.Time) (bool, error) {
+	s.claims = append(s.claims, id)
+	return true, nil
+}
+
+// TestRunGlobalPlan_SkipsWhilePreviousBatchRunning 验证进程内互斥：
+// 上一批次未完成（globalRunning=true）时，新一轮到期直接跳过，不发起认领。
+func TestRunGlobalPlan_SkipsWhilePreviousBatchRunning(t *testing.T) {
+	repo := &claimRecorder{}
+	runner := NewScheduledTestRunnerService(repo, nil, nil, nil, nil, nil)
+	plan := &ScheduledTestPlan{ID: 1, CronExpression: "0 * * * *", PlatformModels: map[string]string{"anthropic": "m"}}
+
+	// 模拟上一批次仍在执行
+	runner.globalRunning.Store(true)
+	runner.runGlobalPlan(plan)
+
+	if len(repo.claims) != 0 {
+		t.Fatalf("expected no claim while previous batch is running, got %d claims", len(repo.claims))
+	}
+
+	// 上一批次结束后（标志复位），下一轮可正常认领
+	runner.globalRunning.Store(false)
+	runner.runGlobalPlan(plan)
+	if len(repo.claims) != 1 {
+		t.Fatalf("expected exactly one claim after previous batch finished, got %d", len(repo.claims))
+	}
+	if runner.globalRunning.Load() {
+		t.Fatalf("expected globalRunning to be released after runGlobalPlan returns")
+	}
+}
+
 type stubGlobalResultRepo struct {
 	ScheduledTestResultRepository
 }

@@ -145,6 +145,11 @@ func (h *ScheduledTestHandler) Delete(c *gin.Context) {
 	}
 
 	if err := h.scheduledTestSvc.DeletePlan(c.Request.Context(), planID); err != nil {
+		// 计划不存在（含已被删除）返回 404，与 Update 的 GetByID 行为对齐
+		if errors.Is(err, sql.ErrNoRows) {
+			response.NotFound(c, "plan not found")
+			return
+		}
 		response.InternalError(c, err.Error())
 		return
 	}
