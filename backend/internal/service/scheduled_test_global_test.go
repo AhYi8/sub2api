@@ -179,7 +179,7 @@ func TestDeletePlan_RejectsGlobalRow(t *testing.T) {
 		global: &ScheduledTestPlan{ID: globalID},
 		byID: map[int64]*ScheduledTestPlan{
 			globalID: {ID: globalID},
-			9:       {ID: 9, AccountID: func() *int64 { v := int64(42); return &v }()},
+			9:        {ID: 9, AccountID: func() *int64 { v := int64(42); return &v }()},
 		},
 	}
 	svc := newGlobalTestService(repo)
