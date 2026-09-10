@@ -518,6 +518,10 @@ func (s *stubAdminService) CreateAccount(ctx context.Context, input *service.Cre
 
 func (s *stubAdminService) ValidateAccountGroupBindings(context.Context, []int64) error { return nil }
 
+func (s *stubAdminService) FindDuplicateAPIKeys(context.Context, string, []string) ([]service.DuplicateAPIKeyHit, error) {
+	return nil, nil
+}
+
 func (s *stubAdminService) DuplicateAccount(ctx context.Context, id int64, actorScope, operationKey string) (*service.Account, error) {
 	account := service.Account{ID: 301, Name: "account (Copy)", Status: service.StatusActive, Schedulable: false}
 	return &account, nil

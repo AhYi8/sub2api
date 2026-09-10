@@ -11,6 +11,7 @@ const {
   showSuccessMock,
   importCodexSessionMock,
   createOpenAICodexPATMock,
+  checkAPIKeysDuplicateMock,
   authIsSimpleMode,
 } = vi.hoisted(() => ({
   createAccountMock: vi.fn(),
@@ -21,6 +22,7 @@ const {
   showSuccessMock: vi.fn(),
   importCodexSessionMock: vi.fn(),
   createOpenAICodexPATMock: vi.fn(),
+  checkAPIKeysDuplicateMock: vi.fn(),
   authIsSimpleMode: { value: true },
 }))
 
@@ -46,6 +48,7 @@ vi.mock('@/api/admin', () => ({
       create: createAccountMock,
       probeUpstreamBilling: probeUpstreamBillingMock,
       syncUpstreamModels: syncUpstreamModelsMock,
+      checkAPIKeysDuplicate: checkAPIKeysDuplicateMock,
       checkMixedChannelRisk: vi.fn().mockResolvedValue({ has_risk: false }),
       importCodexSession: importCodexSessionMock,
       createOpenAICodexPAT: createOpenAICodexPATMock,
@@ -209,6 +212,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     probeUpstreamBillingMock.mockReset().mockResolvedValue({})
     syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], metadata: {} })
     showWarningMock.mockReset()
+    checkAPIKeysDuplicateMock.mockReset().mockResolvedValue({ duplicates: [] })
     importCodexSessionMock.mockReset().mockResolvedValue({
       created: 1,
       updated: 0,
@@ -605,6 +609,7 @@ describe('CreateAccountModal CN provider API key batch creation', () => {
     showWarningMock.mockReset()
     showErrorMock.mockReset()
     showSuccessMock.mockReset()
+    checkAPIKeysDuplicateMock.mockReset().mockResolvedValue({ duplicates: [] })
   })
 
   async function submitCnApiKeyAccount(
@@ -675,15 +680,15 @@ describe('CreateAccountModal CN provider API key batch creation', () => {
     expect(wrapper.text()).toContain('admin.accounts.oauth.batchCreateAccounts:{"count":2}')
   })
 
-  it('重复密钥不去重、保持输入顺序', async () => {
+  it('输入框内重复密钥自动去重（保持首次出现顺序）', async () => {
     await submitCnApiKeyAccount('Zhipu GLM', 'dup-key\ndup-key', '重复密钥')
 
-    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
     expect(createAccountMock.mock.calls[0]?.[0]?.credentials.api_key).toBe('dup-key')
-    expect(createAccountMock.mock.calls[1]?.[0]?.credentials.api_key).toBe('dup-key')
+    expect(checkAPIKeysDuplicateMock).toHaveBeenCalledWith('zhipu', ['dup-key'])
 
     createAccountMock.mockClear()
-    await submitCnApiKeyAccount('DeepSeek', 'key-b\nkey-a', '顺序校验')
+    await submitCnApiKeyAccount('DeepSeek', 'key-b\nkey-a\nkey-b', '顺序校验')
     expect(createAccountMock.mock.calls.map((call) => call[0]?.credentials?.api_key)).toEqual(['key-b', 'key-a'])
   })
 
@@ -749,11 +754,171 @@ describe('CreateAccountModal CN provider API key batch creation', () => {
     expect(wrapper.text()).not.toContain('admin.accounts.oauth.keyAuthFailed')
   })
 
+  it('单条创建命中库内重复时阻止提交并提示所属账号', async () => {
+    checkAPIKeysDuplicateMock.mockResolvedValueOnce({
+      duplicates: [{ api_key: 'key-a', account_id: 7, account_name: '智谱已有' }]
+    })
+
+    await submitCnApiKeyAccount('Zhipu GLM', 'key-a', '智谱单条')
+
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(showErrorMock).toHaveBeenCalledWith('admin.accounts.duplicateCheck.apiKeyExists:{"name":"智谱已有"}')
+  })
+
+  it('批量创建跳过库内重复密钥并重排序号创建其余', async () => {
+    checkAPIKeysDuplicateMock.mockResolvedValueOnce({
+      duplicates: [{ api_key: 'key-old', account_id: 9, account_name: '智谱已有' }]
+    })
+
+    const wrapper = await submitCnApiKeyAccount('Zhipu GLM', 'key-old\nkey-new-1\nkey-new-2', '智谱批量')
+
+    // 查重请求携带全部输入密钥；仅创建未重复的两条并重排序号
+    expect(checkAPIKeysDuplicateMock).toHaveBeenCalledWith('zhipu', ['key-old', 'key-new-1', 'key-new-2'])
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    expect(createAccountMock.mock.calls[0]?.[0]?.name).toBe('智谱批量 #1')
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials.api_key).toBe('key-new-1')
+    expect(createAccountMock.mock.calls[1]?.[0]?.name).toBe('智谱批量 #2')
+    expect(createAccountMock.mock.calls[1]?.[0]?.credentials.api_key).toBe('key-new-2')
+    // 全部成功但有跳过：警告汇总 + 保留弹窗展示跳过明细
+    expect(showWarningMock).toHaveBeenCalledWith('admin.accounts.duplicateCheck.batchSuccessWithSkipped:{"count":2}')
+    expect(wrapper.emitted('close')).toBeUndefined()
+    expect(wrapper.text()).toContain('admin.accounts.duplicateCheck.skippedKeys:{"count":1}')
+    // 跳过明细中的密钥以掩码展示，输入框之外不持久化完整明文
+    expect(wrapper.text()).toContain('ke****（智谱已有）')
+    expect(wrapper.text()).not.toContain('key-old（智谱已有）')
+  })
+
+  it('批量输入全部与库内重复时不创建任何账号', async () => {
+    checkAPIKeysDuplicateMock.mockResolvedValueOnce({
+      duplicates: [
+        { api_key: 'key-a', account_id: 1, account_name: '账号一' },
+        { api_key: 'key-b', account_id: 2, account_name: '账号二' }
+      ]
+    })
+
+    const wrapper = await submitCnApiKeyAccount('Zhipu GLM', 'key-a\nkey-b', '智谱全重')
+
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(showErrorMock).toHaveBeenCalledWith('admin.accounts.duplicateCheck.allKeysExist')
+    expect(wrapper.text()).toContain('admin.accounts.duplicateCheck.skippedKeys:{"count":2}')
+  })
+
+  it('查重服务不可用时阻止提交', async () => {
+    checkAPIKeysDuplicateMock.mockRejectedValueOnce(new Error('network down'))
+
+    await submitCnApiKeyAccount('Zhipu GLM', 'key-a\nkey-b', '智谱查重失败')
+
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(showErrorMock).toHaveBeenCalledWith('admin.accounts.duplicateCheck.apiKeyCheckFailed')
+  })
+
+  it('非国产平台单条创建同样查重（命中即阻止）', async () => {
+    checkAPIKeysDuplicateMock.mockResolvedValueOnce({
+      duplicates: [{ api_key: 'sk-test-api-key', account_id: 5, account_name: '已有 OpenAI 账号' }]
+    })
+
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('openai account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-test-api-key')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(checkAPIKeysDuplicateMock).toHaveBeenCalledWith('openai', ['sk-test-api-key'])
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(showErrorMock).toHaveBeenCalledWith(
+      'admin.accounts.duplicateCheck.apiKeyExists:{"name":"已有 OpenAI 账号"}'
+    )
+  })
+
   it('非国产平台仍使用单行密码输入（回归保护）', async () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'admin.accounts.claudeConsole')
 
     expect(wrapper.find('[data-testid="cn-api-keys-input"]').exists()).toBe(false)
     expect(wrapper.find('form#create-account-form input[type="password"]').exists()).toBe(true)
+  })
+
+  it('批量输入查重后仅剩一条时仍按批量语义命名（名称 #1）', async () => {
+    checkAPIKeysDuplicateMock.mockResolvedValueOnce({
+      duplicates: [{ api_key: 'key-old', account_id: 9, account_name: '智谱已有' }]
+    })
+
+    const wrapper = await submitCnApiKeyAccount('Zhipu GLM', 'key-old\nkey-new', '智谱剩一条')
+
+    // 原始输入为批量（2 条）：即使查重后仅剩 1 条可创建，也保持 #1 命名与批量提示
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.name).toBe('智谱剩一条 #1')
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials.api_key).toBe('key-new')
+    expect(showWarningMock).toHaveBeenCalledWith('admin.accounts.duplicateCheck.batchSuccessWithSkipped:{"count":1}')
+    expect(wrapper.emitted('close')).toBeUndefined()
+  })
+
+  it('查重进行中重复触发提交会被忽略（不可重入）', async () => {
+    // 受控 promise：查重挂起期间再次提交应被 submitting 守卫拦截
+    let resolveCheck: ((value: { duplicates: never[] }) => void) | undefined
+    checkAPIKeysDuplicateMock.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveCheck = resolve })
+    )
+
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Zhipu GLM')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('防重入')
+    await wrapper.get('[data-testid="cn-api-keys-input"]').setValue('key-a\nkey-b')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    // 查重挂起中再次触发提交：守卫直接忽略，不发起第二次查重
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(checkAPIKeysDuplicateMock).toHaveBeenCalledTimes(1)
+
+    resolveCheck?.({ duplicates: [] })
+    await flushPromises()
+
+    // 仅一次创建流程，两条密钥各创建一次
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    expect(createAccountMock.mock.calls[0]?.[0]?.name).toBe('防重入 #1')
+    expect(createAccountMock.mock.calls[1]?.[0]?.name).toBe('防重入 #2')
+  })
+
+  it('查重进行中切换平台后旧请求恢复不再创建', async () => {
+    let resolveCheck: ((value: { duplicates: never[] }) => void) | undefined
+    checkAPIKeysDuplicateMock.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveCheck = resolve })
+    )
+
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Zhipu GLM')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('切平台')
+    await wrapper.get('[data-testid="cn-api-keys-input"]').setValue('key-a\nkey-b')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    // 查重挂起中切到 Kimi：提交序号失效
+    await selectButtonByText(wrapper, 'Kimi')
+
+    resolveCheck?.({ duplicates: [] })
+    await flushPromises()
+
+    // 旧请求恢复后不得按新平台（或任何平台）创建账号
+    expect(createAccountMock).not.toHaveBeenCalled()
+  })
+
+  it('重新提交在本地校验失败时也清空上一轮反馈状态', async () => {
+    // 第一轮：批量部分失败，留下错误列表
+    createAccountMock.mockRejectedValueOnce({ response: { status: 500, data: { detail: 'boom' } } })
+    const wrapper = await submitCnApiKeyAccount('Zhipu GLM', 'key-a\nkey-b', '智谱清理')
+    expect(wrapper.text()).toContain('admin.accounts.oauth.keyAuthFailed')
+
+    // 第二轮：清空名称后提交（多条名称必填校验失败，在任何网络请求前 return）
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(showErrorMock).toHaveBeenCalledWith('admin.accounts.pleaseEnterAccountName')
+    // 上一轮的错误列表已被提交入口清空，不再残留旧密钥信息
+    expect(wrapper.text()).not.toContain('admin.accounts.oauth.keyAuthFailed')
   })
 })

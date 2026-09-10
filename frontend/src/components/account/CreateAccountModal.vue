@@ -1366,6 +1366,13 @@
           >
             <p class="whitespace-pre-line text-sm text-red-600 dark:text-red-400">{{ apiKeyBatchError }}</p>
           </div>
+          <!-- 查重跳过明细：展示因与现有账号重复而未创建的密钥及所属账号 -->
+          <div
+            v-if="apiKeyBatchSkipped"
+            class="rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-700 dark:bg-amber-900/30"
+          >
+            <p class="whitespace-pre-line text-sm text-amber-700 dark:text-amber-400">{{ apiKeyBatchSkipped }}</p>
+          </div>
         </div>
 
         <!-- 上游倍率自动探测：全部 API-key 平台可用（所在区块已限定 apikey 类型） -->
@@ -4080,17 +4087,36 @@ const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_acco
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
-// 国产平台多行批量输入：一行一条 API Key，trim 后过滤空行。
-// 与 Grok RT 批量先例一致：不去重、保持输入顺序（重复密钥由后端各自建号）。
-const parsedApiKeys = computed(() =>
-  apiKeyValue.value
-    .split('\n')
-    .map((key) => key.trim())
-    .filter((key) => key.length > 0)
-)
+// 国产平台多行批量输入：一行一条 API Key，trim 后过滤空行并去重（保持首次出现顺序）。
+// 与 Grok RT 批量先例一致的拆分方式；去重避免同一密钥重复建号。
+const parsedApiKeys = computed(() => {
+  const seen = new Set<string>()
+  const keys: string[] = []
+  for (const line of apiKeyValue.value.split('\n')) {
+    const key = line.trim()
+    if (key && !seen.has(key)) {
+      seen.add(key)
+      keys.push(key)
+    }
+  }
+  return keys
+})
 const parsedApiKeyCount = computed(() => parsedApiKeys.value.length)
 // 批量创建部分失败时的错误列表文案（保留弹窗展示，重新提交时清空）
 const apiKeyBatchError = ref('')
+// 批量提交时因与库内已有账号重复而被跳过的密钥提示文案（与错误列表同步清理）
+const apiKeyBatchSkipped = ref('')
+// apikey 提交流程序号：每次提交递增；切换平台/关闭弹窗时递增使旧的进行中请求失效，
+// 防止查重 await 期间表单状态被改变后、旧请求恢复仍按新状态创建（跨平台错建）。
+let apiKeySubmissionSeq = 0
+const invalidateApiKeySubmission = () => {
+  apiKeySubmissionSeq++
+}
+// 掩码展示密钥（保留首尾少量字符），避免在输入框之外的提示区持久化另一份完整明文
+const maskAPIKey = (key: string): string => {
+  if (key.length <= 8) return `${key.slice(0, 2)}****`
+  return `${key.slice(0, 4)}****${key.slice(-4)}`
+}
 const upstreamBillingAutoProbeEnabled = ref(true)
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）账号类型、API 协议与端点 ──
@@ -4721,8 +4747,11 @@ watch(
 watch(
   () => form.platform,
   (newPlatform) => {
-    // 批量创建错误列表仅对当前平台有效，切换平台后清空避免过期错误残留展示
+    // 批量创建的错误与跳过提示仅对当前平台有效，切换平台后清空避免过期状态残留展示；
+    // 同时使进行中的 apikey 提交失效（查重恢复后不得按新平台状态创建）
     apiKeyBatchError.value = ''
+    apiKeyBatchSkipped.value = ''
+    invalidateApiKeySubmission()
     // Reset base URL based on platform
     if (newPlatform === 'kimi' || newPlatform === 'zhipu' || newPlatform === 'deepseek') {
       apiKeyBaseUrl.value = defaultCNBaseUrl(newPlatform, accountMode.value, apiProtocol.value)
@@ -5192,9 +5221,15 @@ const submitCNApiKeyBatch = async (payloads: CreateAccountRequest[]) => {
     }
     const failedCount = payloads.length - successCount
     if (successCount > 0 && failedCount === 0) {
-      appStore.showSuccess(t('admin.accounts.oauth.batchSuccess', { count: successCount }))
-      emit('created')
-      handleClose()
+      if (apiKeyBatchSkipped.value) {
+        // 存在查重跳过的密钥：保留弹窗展示跳过明细，让用户确认后再手动关闭
+        appStore.showWarning(t('admin.accounts.duplicateCheck.batchSuccessWithSkipped', { count: successCount }))
+        emit('created')
+      } else {
+        appStore.showSuccess(t('admin.accounts.oauth.batchSuccess', { count: successCount }))
+        emit('created')
+        handleClose()
+      }
     } else if (successCount > 0) {
       appStore.showWarning(t('admin.accounts.oauth.batchPartialSuccess', { success: successCount, failed: failedCount }))
       apiKeyBatchError.value = errors.join('\n')
@@ -5257,6 +5292,7 @@ const resetForm = () => {
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
   apiKeyValue.value = ''
   apiKeyBatchError.value = ''
+  apiKeyBatchSkipped.value = ''
   upstreamRequestIdHeader.value = ''
   upstreamBillingAutoProbeEnabled.value = true
   editQuotaLimit.value = null
@@ -5354,6 +5390,9 @@ const resetForm = () => {
 const handleClose = () => {
   antigravityMixedChannelConfirmed.value = false
   apiKeyBatchError.value = ''
+  apiKeyBatchSkipped.value = ''
+  // 弹窗关闭后进行中的 apikey 提交（查重/创建）一律失效
+  invalidateApiKeySubmission()
   clearMixedChannelDialog()
   emit('close')
 }
@@ -5702,6 +5741,15 @@ const handleSubmit = async () => {
   }
 
   // For apikey type, create directly
+  // 不可重入：查重/创建的异步窗口内再次触发提交（如双击回车）直接忽略，
+  // 防止并发两次查重 + 两次创建造成重复建号
+  if (submitting.value) {
+    return
+  }
+  // 提交入口即清空上一轮的反馈状态：无论本次走到哪一步（本地校验失败、查重失败、
+  // 全部重复），都不应残留旧的错误列表或跳过明细（其中含旧密钥的掩码信息）
+  apiKeyBatchError.value = ''
+  apiKeyBatchSkipped.value = ''
   // 国产平台（kimi/zhipu/deepseek）为多行批量输入：一行一条密钥；其余平台维持单值输入
   const apiKeys = isCNPlatform.value ? parsedApiKeys.value : [apiKeyValue.value.trim()]
   if (apiKeys.length === 0 || !apiKeys[0]) {
@@ -5808,10 +5856,57 @@ const handleSubmit = async () => {
     return
   }
 
+  // 创建前查重：与同平台已有账号凭据比对，避免重复建号（单条命中即阻止，批量跳过重复行）。
+  // 放在全部本地校验（header override、临时不可调度规则）之后，避免本地配置非法时
+  // 也发起一次无谓的查重网络请求。查重服务不可用时阻止提交——防重复建号是本流程的
+  // 核心意图，宁可让用户重试。
+  // 竞态防护：查重的 await 窗口内用户可能切换平台或关闭弹窗——以提交序号 + 平台快照
+  // 校验，失效即静默放弃，绝不按变化后的表单状态创建。
+  let keysToCreate = apiKeys
+  submitting.value = true
+  const submissionId = ++apiKeySubmissionSeq
+  const platformSnapshot = form.platform
+  try {
+    const checkResult = await adminAPI.accounts.checkAPIKeysDuplicate(platformSnapshot, apiKeys)
+    if (submissionId !== apiKeySubmissionSeq || !props.show || form.platform !== platformSnapshot) {
+      // 查重期间已切换平台 / 关闭弹窗 / 发起新提交：本次结果作废
+      return
+    }
+    const duplicates = checkResult.duplicates || []
+    if (duplicates.length > 0) {
+      const duplicateKeys = new Set(duplicates.map((hit) => hit.api_key))
+      if (apiKeys.length === 1) {
+        appStore.showError(t('admin.accounts.duplicateCheck.apiKeyExists', { name: duplicates[0].account_name }))
+        return
+      }
+      apiKeyBatchSkipped.value = [
+        t('admin.accounts.duplicateCheck.skippedKeys', { count: duplicates.length }),
+        ...duplicates.map((hit) => `${maskAPIKey(hit.api_key)}（${hit.account_name}）`)
+      ].join('\n')
+      keysToCreate = apiKeys.filter((key) => !duplicateKeys.has(key))
+      if (keysToCreate.length === 0) {
+        appStore.showError(t('admin.accounts.duplicateCheck.allKeysExist'))
+        return
+      }
+    }
+  } catch (err: any) {
+    // 仅记录不含请求体的概要信息——Axios 错误对象的 config.data 携带 API Key 明文，
+    // 整体输出会把密钥泄露到浏览器控制台与日志采集
+    const status = err?.response?.status
+    console.error('check api keys duplicate failed', status ? `status=${status}` : 'no response')
+    appStore.showError(t('admin.accounts.duplicateCheck.apiKeyCheckFailed'))
+    return
+  } finally {
+    // 创建路径（doCreateAccount / submitCNApiKeyBatch）内部各自管理 submitting，
+    // 此处恢复的是查重占用的加载态；同步代码链内立即重新置位，无 UI 重入间隙
+    submitting.value = false
+  }
+
   form.credentials = credentials
   const extra = buildAnthropicExtra(buildOpenAIExtra())
 
-  // 单条：与既有路径完全一致；批量（仅国产平台可达）：逐条创建并按「名称 #序号」命名
+  // 单条：与既有路径完全一致；批量（仅国产平台可达）：逐条创建并按「名称 #序号」命名。
+  // 以原始输入条数判断：批量输入即使查重后仅剩一条，也保持批量语义（名称 #1 + 批量提示）
   const buildApiKeyPayload = (apiKey: string, name?: string): CreateAccountRequest => ({
     ...form,
     name: name ?? form.name,
@@ -5823,11 +5918,11 @@ const handleSubmit = async () => {
   })
 
   if (apiKeys.length === 1) {
-    await doCreateAccount(buildApiKeyPayload(apiKeys[0]))
+    await doCreateAccount(buildApiKeyPayload(keysToCreate[0]))
     return
   }
 
-  await submitCNApiKeyBatch(apiKeys.map((apiKey, index) => buildApiKeyPayload(apiKey, `${form.name} #${index + 1}`)))
+  await submitCNApiKeyBatch(keysToCreate.map((apiKey, index) => buildApiKeyPayload(apiKey, `${form.name} #${index + 1}`)))
 }
 
 const goBackToBasicInfo = () => {

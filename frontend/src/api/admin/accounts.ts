@@ -458,6 +458,22 @@ export async function exchangeCode(
 }
 
 /**
+ * 创建账号前的 API Key 查重：与同平台已有账号凭据比对
+ * @param platform - 账号平台（如 zhipu）
+ * @param apiKeys - 待查重的 API Key 列表
+ * @returns 与现有账号凭据重复的密钥集合
+ */
+export async function checkAPIKeysDuplicate(
+  platform: string,
+  apiKeys: string[]
+): Promise<{ duplicates: Array<{ api_key: string; account_id: number; account_name: string }> }> {
+  const { data } = await apiClient.post<{
+    duplicates: Array<{ api_key: string; account_id: number; account_name: string }>
+  }>('/admin/accounts/check-api-keys-duplicate', { platform, api_keys: apiKeys })
+  return data
+}
+
+/**
  * Batch create accounts
  * @param accounts - Array of account data
  * @returns Results of batch creation
@@ -1079,6 +1095,7 @@ export const accountsAPI = {
   exchangeCode,
   refreshOpenAIToken,
   batchCreate,
+  checkAPIKeysDuplicate,
   batchUpdateCredentials,
   bulkUpdate,
   previewFromCrs,

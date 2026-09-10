@@ -155,6 +155,13 @@ export default {
         noBalanceEndpoint: 'This platform has no balance query endpoint',
         apiKeyBatchHint: 'Batch creation supported: one API Key per line; multiple keys create multiple accounts, each auto-named "Name #index"',
       },
+      duplicateCheck: {
+        apiKeyCheckFailed: 'Duplicate check service is unavailable, please retry later',
+        apiKeyExists: 'This API Key already exists on account "{name}"',
+        allKeysExist: 'All API keys already exist on other accounts; nothing was created',
+        skippedKeys: 'Skipped {count} key(s) that duplicate existing accounts:',
+        batchSuccessWithSkipped: 'Created {count} account(s); duplicate keys were skipped, see the notice below the input for details',
+      },
       types: {
         oauth: 'OAuth',
         chatgptOauth: 'ChatGPT OAuth',

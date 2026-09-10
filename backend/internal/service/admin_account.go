@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,56 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 )
+
+// DuplicateAPIKeyHit 表示一条与库内已有账号凭据重复的 API Key（含所属账号信息）。
+type DuplicateAPIKeyHit struct {
+	APIKey      string `json:"api_key"`
+	AccountID   int64  `json:"account_id"`
+	AccountName string `json:"account_name"`
+}
+
+// FindDuplicateAPIKeys 在同平台 API Key 类型账号（**全部状态**，含停用/过期/错误）的
+// 凭据里查找与 apiKeys 重复的密钥。防重复建号必须覆盖非活跃账号——管理员把重复账号
+// 停用后重新录入同一密钥同样算重复。API Key 是平台专属凭据（同一把密钥只可能属于
+// 同一平台），跨平台比对无意义，故仅比对同平台账号；oauth 等类型凭据不含 api_key，
+// 已在查询层按类型过滤。入参先去重，返回顺序跟随入参首次出现顺序。
+func (s *adminServiceImpl) FindDuplicateAPIKeys(ctx context.Context, platform string, apiKeys []string) ([]DuplicateAPIKeyHit, error) {
+	if len(apiKeys) == 0 {
+		return nil, nil
+	}
+	// status 传空 = 不过滤账号状态，保证查重覆盖全部账号
+	accounts, err := s.accountRepo.ListAllWithFilters(ctx, platform, AccountTypeAPIKey, "", "", 0, "")
+	if err != nil {
+		return nil, fmt.Errorf("list platform accounts: %w", err)
+	}
+	// ListAllWithFilters 不保证返回顺序；按账号 ID 升序排序，确保同密钥多账号时
+	// 返回的所属账号是确定性的（ID 最小者），接口结果可预测、测试可复现。
+	sort.SliceStable(accounts, func(i, j int) bool { return accounts[i].ID < accounts[j].ID })
+	// 库内已有密钥 -> 账号信息（提示用途；同密钥多账号时保留 ID 最小的一个）
+	existing := make(map[string]DuplicateAPIKeyHit, len(accounts))
+	for _, account := range accounts {
+		key := strings.TrimSpace(account.GetCredential("api_key"))
+		if key == "" {
+			continue
+		}
+		if _, ok := existing[key]; !ok {
+			existing[key] = DuplicateAPIKeyHit{APIKey: key, AccountID: account.ID, AccountName: account.Name}
+		}
+	}
+	hits := make([]DuplicateAPIKeyHit, 0)
+	seen := make(map[string]bool, len(apiKeys))
+	for _, key := range apiKeys {
+		trimmed := strings.TrimSpace(key)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		if hit, ok := existing[trimmed]; ok {
+			hits = append(hits, hit)
+		}
+	}
+	return hits, nil
+}
 
 // Account management implementations
 func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64, privacyMode string, sortBy, sortOrder string) ([]Account, int64, error) {

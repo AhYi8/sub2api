@@ -82,6 +82,10 @@ type AdminService interface {
 	GetAccountsByIDs(ctx context.Context, ids []int64) ([]*Account, error)
 	CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error)
 	ValidateAccountGroupBindings(ctx context.Context, groupIDs []int64) error
+	// FindDuplicateAPIKeys 返回 apiKeys 中已存在于同平台 API Key 账号凭据里的密钥
+	//（含所属账号信息），用于创建前查重，避免重复建号。比对覆盖全部账号状态
+	//（含停用/过期/错误）。返回顺序跟随入参顺序。
+	FindDuplicateAPIKeys(ctx context.Context, platform string, apiKeys []string) ([]DuplicateAPIKeyHit, error)
 	// DuplicateAccount creates an independent account from an existing account's configuration.
 	// First-class runtime columns are intentionally reset by the normal account creation path.
 	DuplicateAccount(ctx context.Context, id int64, actorScope, operationKey string) (*Account, error)

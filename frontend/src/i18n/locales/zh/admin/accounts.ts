@@ -358,6 +358,13 @@ export default {
         noBalanceEndpoint: '该平台暂无余额查询接口',
         apiKeyBatchHint: '支持批量创建：一行一条 API Key；多条时将批量创建账号，账号名自动按「名称 #序号」命名',
       },
+      duplicateCheck: {
+        apiKeyCheckFailed: '密钥查重服务暂不可用，请稍后重试',
+        apiKeyExists: '该 API Key 已存在于账号「{name}」',
+        allKeysExist: '所有密钥均已存在于其他账号，未创建任何账号',
+        skippedKeys: '以下 {count} 条密钥与现有账号重复，已跳过：',
+        batchSuccessWithSkipped: '成功创建 {count} 个账号，重复密钥已跳过，详情见输入框下方提示',
+      },
       types: {
         oauth: 'OAuth',
         chatgptOauth: 'ChatGPT OAuth',

@@ -1078,6 +1078,60 @@ func (h *AccountHandler) Create(c *gin.Context) {
 	response.Success(c, result.Data)
 }
 
+const (
+	// 查重请求只携带平台与至多 200 条 API Key，64 KiB 覆盖正常输入并限制资源消耗；
+	// 单条密钥长度上限用于阻止异常超长输入进入比对流程。
+	maxCheckAPIKeysRequestBytes = 64 * 1024
+	maxCheckAPIKeyBytes         = 1024
+)
+
+// CheckAPIKeysDuplicateRequest 创建账号前的 API Key 查重请求。
+type CheckAPIKeysDuplicateRequest struct {
+	Platform string   `json:"platform" binding:"required,oneof=anthropic openai gemini antigravity grok kimi zhipu deepseek"`
+	APIKeys  []string `json:"api_keys" binding:"required,min=1,max=200,dive,required"`
+}
+
+// CheckAPIKeysDuplicate 返回与同平台已有账号凭据重复的 API Key（含所属账号信息）。
+// 前端在批量/单条创建前调用，避免重复建号。
+// POST /api/v1/admin/accounts/check-api-keys-duplicate
+func (h *AccountHandler) CheckAPIKeysDuplicate(c *gin.Context) {
+	// 限制请求体大小，防止超大 JSON 在绑定与逐条处理时造成内存/CPU 压力
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxCheckAPIKeysRequestBytes)
+	var req CheckAPIKeysDuplicateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	// 逐条 trim 并过滤空串，同时限制单条密钥长度（超限直接拒绝，不回显内容）
+	keys := make([]string, 0, len(req.APIKeys))
+	for _, key := range req.APIKeys {
+		trimmed := strings.TrimSpace(key)
+		if trimmed == "" {
+			continue
+		}
+		if len(trimmed) > maxCheckAPIKeyBytes {
+			response.BadRequest(c, "Invalid request: api key too long")
+			return
+		}
+		keys = append(keys, trimmed)
+	}
+	if len(keys) == 0 {
+		response.Success(c, gin.H{"duplicates": []service.DuplicateAPIKeyHit{}})
+		return
+	}
+	hits, err := h.adminService.FindDuplicateAPIKeys(c.Request.Context(), req.Platform, keys)
+	if err != nil {
+		// 统一错误映射：避免把仓储/数据库驱动的原始错误文本透传给客户端
+		//（ErrorFrom 对 5xx 仅在服务端日志记录完整信息，客户端收到 envelope 化消息）
+		response.ErrorFrom(c, err)
+		return
+	}
+	if hits == nil {
+		hits = []service.DuplicateAPIKeyHit{}
+	}
+	response.Success(c, gin.H{"duplicates": hits})
+}
+
 // Duplicate handles creating an independent account from an existing account's configuration.
 // POST /api/v1/admin/accounts/:id/duplicate
 func (h *AccountHandler) Duplicate(c *gin.Context) {
