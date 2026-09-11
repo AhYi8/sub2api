@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"net/http"
 	"time"
 )
 
@@ -26,6 +27,11 @@ type ScheduledTestPlan struct {
 // ScheduledTestResult represents a single test execution result.
 // AccountID 冗余存储被测账号 ID：全局计划的结果也按账号落库，便于回看。
 // IsGlobal 仅在按账号聚合查询时由 JOIN 填充，标识结果来自全局计划。
+//
+// StatusCode/Headers/ResponseBody/ModelID 是进程内透传字段（不落库）：
+// 定时测试失败时保留结构化 HTTP 错误上下文，供 runner 复用正式请求的
+// RateLimitService.HandleUpstreamError 错误策略链路；禁止从 ErrorMessage
+// 反向解析状态码。成功时 ModelID 用于模型级作用域的临时限制恢复。
 type ScheduledTestResult struct {
 	ID           int64     `json:"id"`
 	PlanID       int64     `json:"plan_id"`
@@ -38,6 +44,12 @@ type ScheduledTestResult struct {
 	StartedAt    time.Time `json:"started_at"`
 	FinishedAt   time.Time `json:"finished_at"`
 	CreatedAt    time.Time `json:"created_at"`
+
+	// 以下字段仅供调度联动使用，不持久化到 scheduled_test_results。
+	StatusCode   int         `json:"-"`
+	Headers      http.Header `json:"-"`
+	ResponseBody []byte      `json:"-"`
+	ModelID      string      `json:"-"`
 }
 
 // ScheduledTestPlanRepository defines the data access interface for test plans.

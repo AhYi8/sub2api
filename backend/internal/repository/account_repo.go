@@ -1199,12 +1199,14 @@ func (r *accountRepository) ListActive(ctx context.Context) ([]service.Account, 
 // ListGlobalScheduledTestCandidates 返回全局定时测试的候选账号：
 // 所有非禁用账号（含错误/限流/临时不可调度，配合测试成功后的自动恢复）。
 // 通过原生 SQL 轻量查询，只取 id 与 platform，避免加载代理/分组等重数据。
+// 排除软删除账号：定时测试带调度副作用（失败熔断/成功恢复），
+// 已删账号不应再被写入状态或消耗上游配额。
 func (r *accountRepository) ListGlobalScheduledTestCandidates(ctx context.Context) ([]service.ScheduledTestAccount, error) {
 	if r.sql == nil {
 		return nil, errors.New("account repository SQL executor not configured")
 	}
 	rows, err := r.sql.QueryContext(ctx, `
-		SELECT id, platform FROM accounts WHERE status <> $1 ORDER BY id ASC
+		SELECT id, platform FROM accounts WHERE status <> $1 AND deleted_at IS NULL ORDER BY id ASC
 	`, service.StatusDisabled)
 	if err != nil {
 		return nil, err
@@ -2331,6 +2333,47 @@ func (r *accountRepository) SetModelRateLimit(ctx context.Context, id int64, sco
 	}
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue model rate limit failed: account=%d err=%v", id, err)
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return nil
+}
+
+// ClearModelRateLimit 仅清除账号 extra->model_rate_limits 中指定 scope
+// （单个模型）的 cooldown 记录，不影响其他模型仍然有效的限流。
+// 用于定时测试真实生成成功后的模型级恢复：测试哪个模型就恢复哪个模型。
+// 注意：嵌套路径删除必须用 jsonb #- 操作符；- text[] 只删顶层键，
+// 会把整个 model_rate_limits 对象误删（等同清空全部模型 cooldown）。
+// WHERE 附带 key 存在性检查：无 cooldown 可清时不产生 updated_at 抖动、
+// outbox 与快照同步等写放大，0 行视为成功。
+func (r *accountRepository) ClearModelRateLimit(ctx context.Context, id int64, scope string) error {
+	if scope == "" {
+		return nil
+	}
+	client := clientFromContext(ctx, r.client)
+	result, err := client.ExecContext(
+		ctx,
+		`UPDATE accounts SET
+			extra = extra #- ARRAY['model_rate_limits', $1]::text[],
+			updated_at = NOW()
+		WHERE id = $2
+			AND deleted_at IS NULL
+			AND COALESCE(extra#>>ARRAY['model_rate_limits', $1], '') <> ''`,
+		scope,
+		id,
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		// 目标模型本无 cooldown（或账号不存在/已软删）：无事可清，视为成功。
+		return nil
+	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue model rate limit clear failed: account=%d err=%v", id, err)
 	}
 	r.syncSchedulerAccountSnapshot(ctx, id)
 	return nil

@@ -1097,6 +1097,43 @@ func (s *AccountRepoSuite) TestClearModelRateLimits_SyncsSchedulerSnapshot() {
 	s.Require().NotContains(cacheRecorder.setAccounts[0].Extra, "model_rate_limits")
 }
 
+// TestClearModelRateLimit_RemovesOnlyTargetScope 在真实 SQL 层验证单模型
+// cooldown 清除：必须用 jsonb #- 嵌套路径删除，只删目标模型 key、
+// 保留其他模型；目标 key 不存在时为 no-op（不写 outbox/快照）。
+// （防止单测 stub 遮蔽 jsonb 操作符语义错误。）
+func (s *AccountRepoSuite) TestClearModelRateLimit_RemovesOnlyTargetScope() {
+	account := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name: "acc-clear-model-scope",
+		Extra: map[string]any{
+			"model_rate_limits": map[string]any{
+				"kimi-k2": map[string]any{
+					"rate_limit_reset_at": "2026-06-03T10:00:00Z",
+				},
+				"kimi-k3": map[string]any{
+					"rate_limit_reset_at": "2026-06-03T11:00:00Z",
+				},
+			},
+		},
+	})
+	cacheRecorder := &schedulerCacheRecorder{}
+	s.repo.schedulerCache = cacheRecorder
+
+	s.Require().NoError(s.repo.ClearModelRateLimit(s.ctx, account.ID, "kimi-k3"))
+
+	got, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	limits, ok := got.Extra["model_rate_limits"].(map[string]any)
+	s.Require().True(ok, "model_rate_limits 必须仍然存在（不得整体删除）")
+	s.Require().Contains(limits, "kimi-k2", "未被测试的模型 cooldown 必须保留")
+	s.Require().NotContains(limits, "kimi-k3", "被测模型的 cooldown 必须被精确删除")
+	s.Require().Len(cacheRecorder.setAccounts, 1)
+
+	// 目标 key 不存在时：no-op 成功，不产生快照同步等写放大。
+	before := len(cacheRecorder.setAccounts)
+	s.Require().NoError(s.repo.ClearModelRateLimit(s.ctx, account.ID, "kimi-k3"))
+	s.Require().Equal(before, len(cacheRecorder.setAccounts), "无事可清时不应触发快照同步")
+}
+
 // --- UpdateLastUsed ---
 
 func (s *AccountRepoSuite) TestUpdateLastUsed() {

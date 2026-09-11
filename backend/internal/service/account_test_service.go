@@ -855,6 +855,8 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
 			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
 		}
+		// 保留结构化 HTTP 错误上下文，供定时测试失败后复用统一错误策略。
+		recordScheduledTestUpstreamError(c, resp.StatusCode, resp.Header, body, testModelID)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}
 
@@ -2042,6 +2044,8 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 			errMsg := fmt.Sprintf("Chat Completions authentication failed (401): %s", string(body))
 			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
 		}
+		// 保留结构化 HTTP 错误上下文，供定时测试失败后复用统一错误策略。
+		recordScheduledTestUpstreamError(c, resp.StatusCode, resp.Header, body, testModelID)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) returned %d: %s", resp.StatusCode, string(body)))
 	}
 
@@ -3133,6 +3137,36 @@ func (s *AccountTestService) sendErrorAndEnd(c *gin.Context, errorMsg string) er
 	return fmt.Errorf("%s", errorMsg)
 }
 
+// scheduledTestUpstreamErrorKey 用于在 gin.Context 中透传一次测试请求的
+// 结构化上游 HTTP 错误上下文。仅进程内使用，不落库。
+const scheduledTestUpstreamErrorKey = "sub2api/scheduled_test_upstream_error"
+
+// scheduledTestUpstreamError 记录测试请求收到的非 2xx 上游响应，
+// 供定时测试失败后复用正式请求的 RateLimitService 错误策略链路。
+type scheduledTestUpstreamError struct {
+	StatusCode int
+	Headers    http.Header
+	Body       []byte
+	Model      string
+}
+
+// recordScheduledTestUpstreamError 在收到上游非 2xx 响应时记录结构化上下文。
+// 同一测试可能因 Agent Identity 恢复重试多次，仅保留首次记录即可。
+func recordScheduledTestUpstreamError(c *gin.Context, statusCode int, header http.Header, body []byte, model string) {
+	if c == nil || statusCode <= 0 {
+		return
+	}
+	if _, exists := c.Get(scheduledTestUpstreamErrorKey); exists {
+		return
+	}
+	c.Set(scheduledTestUpstreamErrorKey, &scheduledTestUpstreamError{
+		StatusCode: statusCode,
+		Headers:    header.Clone(),
+		Body:       body,
+		Model:      model,
+	})
+}
+
 // RunTestBackground executes an account test in-memory (no real HTTP client),
 // capturing SSE output via httptest.NewRecorder, then parses the result.
 func (s *AccountTestService) RunTestBackground(ctx context.Context, accountID int64, modelID string) (*ScheduledTestResult, error) {
@@ -3156,14 +3190,24 @@ func (s *AccountTestService) RunTestBackground(ctx context.Context, accountID in
 		}
 	}
 
-	return &ScheduledTestResult{
+	result := &ScheduledTestResult{
 		Status:       status,
 		ResponseText: responseText,
 		ErrorMessage: errMsg,
 		LatencyMs:    finishedAt.Sub(startedAt).Milliseconds(),
 		StartedAt:    startedAt,
 		FinishedAt:   finishedAt,
-	}, nil
+	}
+	// 透传结构化上游错误上下文（失败时触发错误策略、成功时按模型恢复均依赖它）。
+	if rec, ok := ginCtx.Get(scheduledTestUpstreamErrorKey); ok {
+		if upstreamErr, ok := rec.(*scheduledTestUpstreamError); ok && upstreamErr != nil {
+			result.StatusCode = upstreamErr.StatusCode
+			result.Headers = upstreamErr.Headers
+			result.ResponseBody = upstreamErr.Body
+			result.ModelID = upstreamErr.Model
+		}
+	}
+	return result, nil
 }
 
 // parseTestSSEOutput extracts response text and error message from captured SSE output.

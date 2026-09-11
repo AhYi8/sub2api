@@ -2096,6 +2096,93 @@ func (s *RateLimitService) RecoverAccountAfterSuccessfulTest(ctx context.Context
 	return s.RecoverAccountState(ctx, accountID, AccountRecoveryOptions{})
 }
 
+// ModelRateLimitScopeClearer 是 AccountRepository 的可选能力：
+// 仅清除单个 (account, model) 的模型级 cooldown，不影响其他模型。
+// 通过类型断言注入，避免扩张宽泛的账号仓储接口（与 ScheduledTestAccountSource 同模式）。
+type ModelRateLimitScopeClearer interface {
+	ClearModelRateLimit(ctx context.Context, id int64, scope string) error
+}
+
+// RecoverTemporarySchedulingStateAfterSuccess 定时测试对真实生成接口获得
+// 有效 2xx 后调用：立即清除由临时错误策略产生的调度限制，不等待原
+// cooldown TTL 自然过期。与 AutoRecover 开关解耦（临时状态本有 TTL，
+// 测试成功只意味着可提前恢复）。
+//
+// 作用域规则：
+//   - 已知 modelID：只清除该 (account, model) 的模型级 cooldown，其他模型
+//     仍然有效的限流不受影响；
+//   - 账号级 temp-unsched 仅当其 reason 是规则触发的 TempUnschedState
+//     （JSON 且带 status_code）时才清除，OAuth 401 冷却、手动禁用、
+//     status=error 等非规则临时状态一律不碰。
+func (s *RateLimitService) RecoverTemporarySchedulingStateAfterSuccess(ctx context.Context, accountID int64, modelID string) error {
+	if s == nil || s.accountRepo == nil || accountID <= 0 {
+		return nil
+	}
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	if account == nil {
+		return nil
+	}
+
+	modelID = strings.TrimSpace(modelID)
+	if modelID != "" {
+		// 与失败写入侧同口径：真实转发的 cooldown key 使用账号模型映射后的
+		// 上游模型名，清除时必须应用同一映射，否则配置了 model_mapping 的
+		// 账号会出现“写入映射名、清别名”导致 cooldown 永远清不掉。
+		if mapped := strings.TrimSpace(account.GetMappedModel(modelID)); mapped != "" {
+			modelID = mapped
+		}
+		clearer, ok := s.accountRepo.(ModelRateLimitScopeClearer)
+		if !ok {
+			// 装配缺陷：仓储未实现单模型清除能力。大声报错而不是静默降级为全量清除。
+			slog.Warn("scheduled_test_model_recover_repo_capability_missing", "account_id", accountID, "model", modelID)
+		} else if err := clearer.ClearModelRateLimit(ctx, accountID, modelID); err != nil {
+			return err
+		} else {
+			slog.Info("scheduled_test_model_rate_limit_cleared", "account_id", accountID, "model", modelID)
+		}
+	}
+
+	// 账号级 temp-unsched：仅清除确认由临时不可调度规则产生的状态。
+	if isRuleTriggeredTempUnsched(account) {
+		if err := s.accountRepo.ClearTempUnschedulable(ctx, accountID); err != nil {
+			return err
+		}
+		if s.tempUnschedCache != nil {
+			if err := s.tempUnschedCache.DeleteTempUnsched(ctx, accountID); err != nil {
+				slog.Warn("temp_unsched_cache_delete_failed", "account_id", accountID, "error", err)
+			}
+		}
+		s.notifyAccountSchedulingBlockCleared(accountID)
+		slog.Info("scheduled_test_temp_unsched_cleared", "account_id", accountID)
+	}
+	return nil
+}
+
+// isRuleTriggeredTempUnsched 判断账号当前的临时不可调度状态是否由
+// 管理员配置的临时不可调度规则触发：triggerTempUnschedulable 写入的
+// reason 是带 status_code 的 TempUnschedState JSON；OAuth 401 冷却写入
+// 纯文本、手动禁用不占用该字段，均不会被误恢复。
+func isRuleTriggeredTempUnsched(account *Account) bool {
+	if account == nil || account.TempUnschedulableUntil == nil {
+		return false
+	}
+	if account.TempUnschedulableUntil.Unix() <= time.Now().Unix() {
+		return false
+	}
+	reason := strings.TrimSpace(account.TempUnschedulableReason)
+	if reason == "" {
+		return false
+	}
+	var state TempUnschedState
+	if err := json.Unmarshal([]byte(reason), &state); err != nil {
+		return false
+	}
+	return state.StatusCode > 0
+}
+
 func (s *RateLimitService) ClearTempUnschedulable(ctx context.Context, accountID int64) error {
 	if err := s.accountRepo.ClearTempUnschedulable(ctx, accountID); err != nil {
 		return err
