@@ -103,16 +103,19 @@ func rule(errCode float64, keywords []any, minutes float64) map[string]any {
 	}
 }
 
-func newLinkageRunner(repo *schedulingLinkageRepoStub, cache *tempUnschedCacheRecorder) *ScheduledTestRunnerService {
+func newLinkageRunner(repo *schedulingLinkageRepoStub, cache *tempUnschedCacheRecorder) (*ScheduledTestRunnerService, *runtimeBlockRecorder) {
 	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, cache)
-	return NewScheduledTestRunnerService(nil, nil, nil, svc, &config.Config{}, repo)
+	blocker := &runtimeBlockRecorder{}
+	svc.SetAccountRuntimeBlocker(blocker)
+	return NewScheduledTestRunnerService(nil, nil, nil, svc, &config.Config{}, repo), blocker
 }
 
-func TestScheduledTestFailure_403MonthlyLimit_TriggersModelScopedTempUnschedulable(t *testing.T) {
+func TestScheduledTestFailure_403MonthlyLimit_TriggersAccountTempUnschedulable(t *testing.T) {
 	repo := &schedulingLinkageRepoStub{account: kimiRuleAccount(
 		rule(403, []any{"You've reached your monthly usage limit for this billing cycle"}, 60),
 	)}
-	runner := newLinkageRunner(repo, &tempUnschedCacheRecorder{})
+	cache := &tempUnschedCacheRecorder{}
+	runner, blocker := newLinkageRunner(repo, cache)
 
 	result := &ScheduledTestResult{
 		Status:       "failed",
@@ -121,17 +124,23 @@ func TestScheduledTestFailure_403MonthlyLimit_TriggersModelScopedTempUnschedulab
 	}
 	runner.applySchedulingSideEffects(context.Background(), 42, 1, "kimi-k3", result)
 
-	// 已知模型：只设置模型级 cooldown，不禁用整个账号；也不触发 SetError 等兜底。
-	require.Equal(t, []string{"kimi-k3"}, repo.setModelRateLimitKeys)
-	require.Zero(t, repo.setTempUnschedCalls)
+	// 定时测试命中规则 → 账号级临时不可调度（整账号停调）：
+	// DB 写入 + Redis 缓存 + 调度阻断通知三件套齐全，而非只停被测模型；
+	// 也不触发 SetError 等兜底。
+	require.Equal(t, 1, repo.setTempUnschedCalls)
+	require.Equal(t, []int64{42}, cache.setIDs)
+	require.Len(t, blocker.accounts, 1)
+	require.Equal(t, int64(42), blocker.accounts[0].ID)
+	require.Empty(t, repo.setModelRateLimitKeys)
 	require.Zero(t, repo.setErrorCalls)
 }
 
-func TestScheduledTestFailure_429ResourceExhausted_TriggersModelCooldown(t *testing.T) {
+func TestScheduledTestFailure_429ResourceExhausted_TriggersAccountTempUnschedulable(t *testing.T) {
 	repo := &schedulingLinkageRepoStub{account: kimiRuleAccount(
 		rule(429, []any{"resource_exhausted"}, 5),
 	)}
-	runner := newLinkageRunner(repo, &tempUnschedCacheRecorder{})
+	cache := &tempUnschedCacheRecorder{}
+	runner, blocker := newLinkageRunner(repo, cache)
 
 	result := &ScheduledTestResult{
 		Status:       "failed",
@@ -140,8 +149,10 @@ func TestScheduledTestFailure_429ResourceExhausted_TriggersModelCooldown(t *test
 	}
 	runner.applySchedulingSideEffects(context.Background(), 42, 1, "kimi-k3", result)
 
-	require.Equal(t, []string{"kimi-k3"}, repo.setModelRateLimitKeys)
-	require.Zero(t, repo.setTempUnschedCalls)
+	require.Equal(t, 1, repo.setTempUnschedCalls)
+	require.Equal(t, []int64{42}, cache.setIDs)
+	require.Len(t, blocker.accounts, 1)
+	require.Empty(t, repo.setModelRateLimitKeys)
 	require.Zero(t, repo.setErrorCalls)
 }
 
@@ -149,20 +160,22 @@ func TestScheduledTestFailure_Unknown403_DoesNotTriggerTempUnschedulable(t *test
 	repo := &schedulingLinkageRepoStub{account: kimiRuleAccount(
 		rule(403, []any{"monthly usage limit"}, 60),
 	)}
-	runner := newLinkageRunner(repo, &tempUnschedCacheRecorder{})
+	cache := &tempUnschedCacheRecorder{}
+	runner, blocker := newLinkageRunner(repo, cache)
 
 	result := &ScheduledTestResult{
 		Status:       "failed",
 		StatusCode:   http.StatusForbidden,
 		ResponseBody: []byte(`{"error":{"message":"unknown permission error"}}`),
-		ModelID:      "kimi-k3",
 	}
 	runner.applySchedulingSideEffects(context.Background(), 42, 1, "kimi-k3", result)
 
-	// 未命中任何规则：只记录失败——不进入临时不可调度、不写模型级 cooldown，
-	// 也不触发 HandleUpstreamError 兜底分支的 SetError 永久禁用。
+	// 未命中任何规则：只记录失败——不进入临时不可调度（三件套均无）、
+	// 不写模型级 cooldown，也不触发兜底分支的 SetError 永久禁用。
 	require.Empty(t, repo.setModelRateLimitKeys)
 	require.Zero(t, repo.setTempUnschedCalls)
+	require.Empty(t, cache.setIDs)
+	require.Empty(t, blocker.accounts)
 	require.Zero(t, repo.setErrorCalls)
 }
 
@@ -171,7 +184,7 @@ func TestScheduledTestFailure_5HourAndWeeklyLimits_MatchConfiguredRules(t *testi
 		rule(403, []any{"You've reached your 5-hour usage limit"}, 300),
 		rule(403, []any{"You've reached your weekly (7-day) usage limit"}, 10080),
 	)}
-	runner := newLinkageRunner(repo, &tempUnschedCacheRecorder{})
+	runner, _ := newLinkageRunner(repo, &tempUnschedCacheRecorder{})
 
 	for _, body := range []string{
 		`{"error":{"message":"You've reached your 5-hour usage limit"}}`,
@@ -181,12 +194,12 @@ func TestScheduledTestFailure_5HourAndWeeklyLimits_MatchConfiguredRules(t *testi
 			Status:       "failed",
 			StatusCode:   http.StatusForbidden,
 			ResponseBody: []byte(body),
-			ModelID:      "kimi-k3",
 		}
 		runner.applySchedulingSideEffects(context.Background(), 42, 1, "kimi-k3", result)
 	}
 
-	require.Equal(t, []string{"kimi-k3", "kimi-k3"}, repo.setModelRateLimitKeys)
+	require.Equal(t, 2, repo.setTempUnschedCalls)
+	require.Empty(t, repo.setModelRateLimitKeys)
 }
 
 // mappedModelAccount 构造配置了模型映射的 Kimi 账号：别名 kimi-latest → 上游 moonshot-v1-kimi。
@@ -199,32 +212,15 @@ func mappedModelAccount(rules ...map[string]any) *Account {
 }
 
 func TestScheduledTestSuccess_ModelMapping_ClearsUpstreamModelKey(t *testing.T) {
-	// 失败写入与真实转发使用映射后的上游模型名作为 cooldown key，
+	// 真实转发使用映射后的上游模型名作为 cooldown key，
 	// 成功恢复回退计划侧别名时必须应用同一映射，否则 cooldown 永远清不掉。
 	repo := &schedulingLinkageRepoStub{account: mappedModelAccount()}
-	runner := newLinkageRunner(repo, &tempUnschedCacheRecorder{})
+	runner, _ := newLinkageRunner(repo, &tempUnschedCacheRecorder{})
 
 	result := &ScheduledTestResult{Status: "success"}
 	runner.applySchedulingSideEffects(context.Background(), 42, 1, "kimi-latest", result)
 
 	require.Equal(t, []string{"moonshot-v1-kimi"}, repo.clearModelScopes)
-}
-
-func TestScheduledTestFailure_ModelMappingFallback_UsesUpstreamModelKey(t *testing.T) {
-	repo := &schedulingLinkageRepoStub{account: mappedModelAccount(
-		rule(429, []any{"resource_exhausted"}, 5),
-	)}
-	runner := newLinkageRunner(repo, &tempUnschedCacheRecorder{})
-
-	// 失败结果未携带结构化上下文以外的 ModelID 时，回退计划侧别名并做映射。
-	result := &ScheduledTestResult{
-		Status:       "failed",
-		StatusCode:   http.StatusTooManyRequests,
-		ResponseBody: []byte(`{"error":{"code":"resource_exhausted"}}`),
-	}
-	runner.applySchedulingSideEffects(context.Background(), 42, 1, "kimi-latest", result)
-
-	require.Equal(t, []string{"moonshot-v1-kimi"}, repo.setModelRateLimitKeys)
 }
 
 func TestScheduledTestFailure_401_SkipsRuleLinkage(t *testing.T) {
@@ -233,7 +229,7 @@ func TestScheduledTestFailure_401_SkipsRuleLinkage(t *testing.T) {
 	repo := &schedulingLinkageRepoStub{account: kimiRuleAccount(
 		rule(401, []any{"unauthorized"}, 10),
 	)}
-	runner := newLinkageRunner(repo, &tempUnschedCacheRecorder{})
+	runner, _ := newLinkageRunner(repo, &tempUnschedCacheRecorder{})
 
 	result := &ScheduledTestResult{
 		Status:       "failed",
@@ -251,7 +247,7 @@ func TestScheduledTestFailure_WithoutHTTPContext_SkipsErrorPolicy(t *testing.T) 
 	repo := &schedulingLinkageRepoStub{account: kimiRuleAccount(
 		rule(403, []any{"monthly usage limit"}, 60),
 	)}
-	runner := newLinkageRunner(repo, &tempUnschedCacheRecorder{})
+	runner, _ := newLinkageRunner(repo, &tempUnschedCacheRecorder{})
 
 	// 网络失败等场景：无结构化 HTTP 上下文，不猜测错误语义。
 	result := &ScheduledTestResult{Status: "failed", ErrorMessage: "dial tcp: timeout"}
@@ -264,7 +260,7 @@ func TestScheduledTestFailure_WithoutHTTPContext_SkipsErrorPolicy(t *testing.T) 
 
 func TestScheduledTestSuccess_ClearsOnlyTestedModelCooldown(t *testing.T) {
 	repo := &schedulingLinkageRepoStub{account: kimiRuleAccount()}
-	runner := newLinkageRunner(repo, &tempUnschedCacheRecorder{})
+	runner, _ := newLinkageRunner(repo, &tempUnschedCacheRecorder{})
 
 	// 成功结果不携带结构化错误上下文（ModelID 仅在失败时透传），
 	// 模型级恢复必须回退到计划侧配置的被测模型。
@@ -292,13 +288,50 @@ func TestScheduledTestSuccess_ClearsRuleTriggeredAccountTempUnschedulable(t *tes
 
 	repo := &schedulingLinkageRepoStub{account: acc}
 	cache := &tempUnschedCacheRecorder{}
-	runner := newLinkageRunner(repo, cache)
+	runner, _ := newLinkageRunner(repo, cache)
 
 	result := &ScheduledTestResult{Status: "success", ModelID: "kimi-k3"}
 	runner.applySchedulingSideEffects(context.Background(), 42, 1, "kimi-k3", result)
 
 	require.Equal(t, 1, repo.clearTempUnschedCalls)
 	require.Equal(t, []int64{42}, cache.deletedIDs)
+}
+
+func TestScheduledTestSuccess_ClearsAccountTempUnschedAndTestedModelKey_KeepsOtherModels(t *testing.T) {
+	// 组合场景：失败联动写入账号级 temp-unsched 后，真实流量又对多个模型
+	// 写入模型级 cooldown。被测模型成功 → 账号级 temp-unsched 与被测模型
+	// key 都清除，其他模型的 cooldown 原样保留。
+	state := &TempUnschedState{
+		UntilUnix:  time.Now().Add(time.Hour).Unix(),
+		StatusCode: http.StatusForbidden,
+	}
+	reason, err := json.Marshal(state)
+	require.NoError(t, err)
+
+	acc := kimiRuleAccount()
+	acc.TempUnschedulableUntil = ptrTime(time.Now().Add(time.Hour))
+	acc.TempUnschedulableReason = string(reason)
+	acc.Extra = map[string]any{
+		"model_rate_limits": map[string]any{
+			"kimi-k2": map[string]any{"rate_limit_reset_at": time.Now().Add(time.Hour).Format(time.RFC3339)},
+			"kimi-k3": map[string]any{"rate_limit_reset_at": time.Now().Add(time.Hour).Format(time.RFC3339)},
+		},
+	}
+
+	repo := &schedulingLinkageRepoStub{account: acc}
+	cache := &tempUnschedCacheRecorder{}
+	runner, blocker := newLinkageRunner(repo, cache)
+
+	result := &ScheduledTestResult{Status: "success"}
+	runner.applySchedulingSideEffects(context.Background(), 42, 1, "kimi-k3", result)
+
+	// 账号级：清除规则触发的 temp-unsched（DB + Redis + 解除通知）。
+	require.Equal(t, 1, repo.clearTempUnschedCalls)
+	require.Equal(t, []int64{42}, cache.deletedIDs)
+	require.Equal(t, []int64{42}, blocker.clearedIDs)
+	// 模型级：只清被测模型 key，kimi-k2 保留；不做全量清除。
+	require.Equal(t, []string{"kimi-k3"}, repo.clearModelScopes)
+	require.Zero(t, repo.clearModelAllCalls)
 }
 
 func TestScheduledTestSuccess_DoesNotClearNonRuleTempUnschedulable(t *testing.T) {
@@ -310,7 +343,7 @@ func TestScheduledTestSuccess_DoesNotClearNonRuleTempUnschedulable(t *testing.T)
 
 	repo := &schedulingLinkageRepoStub{account: acc}
 	cache := &tempUnschedCacheRecorder{}
-	runner := newLinkageRunner(repo, cache)
+	runner, _ := newLinkageRunner(repo, cache)
 
 	result := &ScheduledTestResult{Status: "success", ModelID: "kimi-k3"}
 	runner.applySchedulingSideEffects(context.Background(), 42, 1, "kimi-k3", result)
@@ -327,7 +360,7 @@ func TestScheduledTestSuccess_DoesNotTouchErrorStatus(t *testing.T) {
 	acc.Status = StatusError
 
 	repo := &schedulingLinkageRepoStub{account: acc}
-	runner := newLinkageRunner(repo, &tempUnschedCacheRecorder{})
+	runner, _ := newLinkageRunner(repo, &tempUnschedCacheRecorder{})
 
 	result := &ScheduledTestResult{Status: "success", ModelID: "kimi-k3"}
 	runner.applySchedulingSideEffects(context.Background(), 42, 1, "kimi-k3", result)

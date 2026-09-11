@@ -65,6 +65,8 @@ func (r *rateLimitClearRepoStub) ClearTempUnschedulable(ctx context.Context, id 
 type tempUnschedCacheRecorder struct {
 	deletedIDs []int64
 	deleteErr  error
+	setIDs     []int64
+	setErr     error
 }
 
 type recoverTokenInvalidatorStub struct {
@@ -73,7 +75,8 @@ type recoverTokenInvalidatorStub struct {
 }
 
 func (c *tempUnschedCacheRecorder) SetTempUnsched(ctx context.Context, accountID int64, state *TempUnschedState) error {
-	return nil
+	c.setIDs = append(c.setIDs, accountID)
+	return c.setErr
 }
 
 func (c *tempUnschedCacheRecorder) GetTempUnsched(ctx context.Context, accountID int64) (*TempUnschedState, error) {

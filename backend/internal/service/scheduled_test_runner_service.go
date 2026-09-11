@@ -283,20 +283,23 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 // applySchedulingSideEffects 将一次定时测试结果联动到实际调度状态，形成
 // “失败熔断、成功恢复”闭环。定时测试直接请求指定账号（绕过业务调度层的
 // cooldown），因此它比业务流量更早发现额度耗尽与额度恢复：
-//   - 失败且保留有结构化 HTTP 上下文时，只应用管理员显式配置的“错误码 +
-//     关键词 + 持续时间”临时不可调度规则（与正式链路同一 tryTempUnschedulable
-//     实现，已知模型时模型级 cooldown 优先）。刻意不复用 HandleUpstreamError
-//     的全量语义：其 401/402/403 兜底（OAuth 冷却、SetError 永久禁用、
-//     openai 403 计数等）面向真实流量，被周期性的定时测试反复触发会放大成
-//     真实流量不会出现的处罚；未命中规则时只记录失败，不产生调度副作用。
+//   - 失败且保留有结构化 HTTP 上下文时，复用真实流量的临时不可调度入口
+//     HandleTempUnschedulable（含 pool-mode / 自定义错误码白名单门控），
+//     且刻意不传模型名：真实流量传入模型名会走模型级 cooldown，但定时
+//     测试代表的是“该账号当前不可用”的强信号（额度耗尽等账号级状态），
+//     命中规则应对整个账号临时不可调度，而不是只停被测模型。未命中规则
+//     时只记录失败，不产生调度副作用。
+//     影响面（账号级语义的固有取舍，管理员配置规则时应知悉）：
+//     spark 影子账号会因母账号 temp-unsched 连坐停调（影子共享母配额，
+//     语义自洽）；任一模型的定时测试成功即解封整账号（账号级状态不携带
+//     模型归属）。
 //   - 成功时立即清除由临时错误策略产生的调度限制，不等待原 TTL 自然过期。
 //     该恢复与 AutoRecover 开关解耦，且只处理临时状态：手动禁用、
 //     status=error、永久错误不受影响。
 //
-// planModelID 是计划侧配置的被测模型：结构化错误上下文仅在失败时透传
-// ModelID（已是映射后的上游模型名），成功结果为空，因此成功恢复必须回退
-// 到计划侧模型，并在恢复入口统一做模型名映射，保证清除的 key 与失败时
-// 写入的 model_rate_limits key 同口径。
+// planModelID 是计划侧配置的被测模型：用于成功恢复时精确清除该模型的
+// model_rate_limits key（真实流量会写模型级 cooldown），由恢复入口统一做
+// 模型名映射，保证清除的 key 与写入侧同口径。
 func (s *ScheduledTestRunnerService) applySchedulingSideEffects(ctx context.Context, accountID int64, planID int64, planModelID string, result *ScheduledTestResult) {
 	if s.rateLimitSvc == nil || result == nil {
 		return
@@ -322,16 +325,11 @@ func (s *ScheduledTestRunnerService) applySchedulingSideEffects(ctx context.Cont
 			logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d account=%d load account for error policy failed: %v", planID, accountID, err)
 			return
 		}
-		modelID := result.ModelID
-		if modelID == "" {
-			// 回退到计划侧模型时应用账号模型映射，与真实转发的 cooldown key 口径一致。
-			modelID = strings.TrimSpace(planModelID)
-			if mapped := strings.TrimSpace(account.GetMappedModel(modelID)); mapped != "" {
-				modelID = mapped
-			}
-		}
-		if s.rateLimitSvc.tryTempUnschedulable(ctx, account, result.StatusCode, result.ResponseBody, modelID) {
-			logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d account=%d upstream error %d hit temp-unschedulable rule (model=%s)", planID, accountID, result.StatusCode, modelID)
+		// 复用真实流量入口 HandleTempUnschedulable（不传模型名 → 账号级：
+		// SetTempUnschedulable + Redis 缓存 + 调度阻断通知，整账号暂停调度
+		// 直到 TTL 或测试成功恢复），确保与真实流量共享同一套门控口径。
+		if s.rateLimitSvc.HandleTempUnschedulable(ctx, account, result.StatusCode, result.ResponseBody) {
+			logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d account=%d upstream error %d hit temp-unschedulable rule, account temp-unschedulable", planID, accountID, result.StatusCode)
 		}
 		return
 	}
