@@ -61,11 +61,13 @@ func (m *roundRobinCursorManager) next(ctx context.Context, scope string) int64 
 func (m *roundRobinCursorManager) nextLocal(scope string) int64 {
 	var cursor *atomic.Int64
 	if loaded, ok := m.local.Load(scope); ok {
-		cursor = loaded.(*atomic.Int64)
+		cursor, _ = loaded.(*atomic.Int64)
 	} else {
 		cursor = &atomic.Int64{}
 		loaded, _ = m.local.LoadOrStore(scope, cursor)
-		cursor = loaded.(*atomic.Int64)
+		// sync.Map 的值仅由本方法写入且恒为 *atomic.Int64，断言 ok 恒为 true；
+		// 双值形式仅为满足 errcheck 的类型断言检查（check-type-assertions）。
+		cursor, _ = loaded.(*atomic.Int64)
 	}
 	return cursor.Add(1)
 }
@@ -129,14 +131,6 @@ func (s *GatewayService) accountSchedulingRoundRobinEnabled(ctx context.Context)
 // （各池按自身大小取模），否则会破坏「每次调度推进一次游标」的严格性。
 func (s *GatewayService) nextRoundRobinCursor(ctx context.Context, groupID *int64, platform string) int64 {
 	return roundRobinManager(&s.roundRobinCursors, s.cache).next(ctx, roundRobinScope(groupID, platform))
-}
-
-// nextRoundRobinStart 计算轮询起始下标；单候选或空池不推进游标（避免空转 Redis 写）。
-func (s *GatewayService) nextRoundRobinStart(ctx context.Context, groupID *int64, platform string, candidateCount int) int {
-	if candidateCount <= 1 {
-		return 0
-	}
-	return rotateStartIndex(s.nextRoundRobinCursor(ctx, groupID, platform), candidateCount)
 }
 
 // OpenAIGatewayService 侧封装（语义与 GatewayService 侧一致）。
