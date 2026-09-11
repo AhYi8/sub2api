@@ -349,7 +349,9 @@ func (s *SettingService) GetOpenAICodexClientVersion(ctx context.Context) string
 			})
 			return fallback, nil
 		}
-		version := NormalizeCodexClientVersion(values[SettingKeyOpenAICodexClientVersion])
+		// 管理员手填值与面板读取同口径：宽容剥离 tag 前缀，存量脏值在运行时也真正自愈；
+		// 剥离后仍过同一版本号正则白名单，安全性等价。Synced 为机器写入，保持严格版。
+		version := NormalizeAdminCodexClientVersionInput(values[SettingKeyOpenAICodexClientVersion])
 		if version == "" {
 			version = NormalizeCodexClientVersion(values[SettingKeyOpenAICodexClientVersionSynced])
 		}

@@ -32,6 +32,23 @@ func NormalizeCodexClientVersion(version string) string {
 	return version
 }
 
+// NormalizeAdminCodexClientVersionInput 归一化管理员在面板填写的 Codex 客户端版本号。
+// 管理员常从 GitHub release 直接复制 tag（rust-v0.146.0 / v0.146.0），此处剥离
+// tag 前缀后再按同一版本号规则校验，避免合法意图被 400 拒绝。入站 UA 解析仍使用
+// 严格的 NormalizeCodexClientVersion（带 v 前缀的非官方形态必须拒绝），两者语义
+// 不同，不得混用。
+func NormalizeAdminCodexClientVersionInput(version string) string {
+	version = strings.TrimSpace(version)
+	lower := strings.ToLower(version)
+	switch {
+	case strings.HasPrefix(lower, "rust-v"):
+		version = version[len("rust-v"):]
+	case strings.HasPrefix(lower, "v"):
+		version = version[len("v"):]
+	}
+	return NormalizeCodexClientVersion(version)
+}
+
 // buildCodexCLIUserAgent 按版本号拼出规范 Codex TUI User-Agent。
 // UA 形态只在 codexCLIUserAgentSuffix 一处定义，避免多处拼装漂移。
 func buildCodexCLIUserAgent(version string) string {

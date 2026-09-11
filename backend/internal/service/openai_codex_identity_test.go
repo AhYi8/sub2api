@@ -2,6 +2,7 @@ package service
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -314,6 +315,30 @@ func TestNormalizeCodexClientVersion(t *testing.T) {
 	require.Empty(t, NormalizeCodexClientVersion("0.146.0 (Ubuntu)"))
 	require.Empty(t, NormalizeCodexClientVersion("0.146.0\r\nX-Injected: 1"))
 	require.Empty(t, NormalizeCodexClientVersion("latest"))
+}
+
+// TestNormalizeAdminCodexClientVersionInput 验证管理员输入的宽容归一化：
+// GitHub release tag 前缀（rust-v / v）被剥离后通过校验，注入串仍被拒绝。
+// 与严格的 NormalizeCodexClientVersion（拒绝 v 前缀）语义严格区分。
+func TestNormalizeAdminCodexClientVersionInput(t *testing.T) {
+	require.Equal(t, "0.146.0", NormalizeAdminCodexClientVersionInput("rust-v0.146.0"))
+	require.Equal(t, "0.146.0", NormalizeAdminCodexClientVersionInput("v0.146.0"))
+	require.Equal(t, "0.146.0", NormalizeAdminCodexClientVersionInput(" V0.146.0 "))
+	require.Equal(t, "0.146.0", NormalizeAdminCodexClientVersionInput("RUST-V0.146.0"))
+	require.Equal(t, "0.147.0-alpha.4", NormalizeAdminCodexClientVersionInput("rust-v0.147.0-alpha.4"))
+	require.Equal(t, "0.146.0", NormalizeAdminCodexClientVersionInput(" 0.146.0 "))
+	require.Equal(t, "", NormalizeAdminCodexClientVersionInput(""))
+	require.Equal(t, "", NormalizeAdminCodexClientVersionInput("   "))
+	// 非 tag 前缀的脏输入依旧拒绝，不做静默清洗
+	require.Equal(t, "", NormalizeAdminCodexClientVersionInput("0.146.0 (Ubuntu)"))
+	require.Equal(t, "", NormalizeAdminCodexClientVersionInput("latest"))
+	require.Equal(t, "", NormalizeAdminCodexClientVersionInput("rustv0.146.0"))
+	// 带 tag 前缀的注入串：剥前缀后仍被正则白名单拒绝
+	require.Equal(t, "", NormalizeAdminCodexClientVersionInput("rust-v0.146.0\r\nX-Injected: 1"))
+	// 边界形态：rust-v 单独成值、双前缀不递归剥离、剥前缀后超长
+	require.Equal(t, "", NormalizeAdminCodexClientVersionInput("rust-v"))
+	require.Equal(t, "", NormalizeAdminCodexClientVersionInput("rust-vv0.146.0"))
+	require.Equal(t, "", NormalizeAdminCodexClientVersionInput("rust-v"+strings.Repeat("0", 65)))
 }
 
 func TestBuildCodexCLIUserAgent(t *testing.T) {

@@ -1445,8 +1445,11 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	}
 	if req.OpenAICodexClientVersion != nil {
 		// 该值会被拼进出站 User-Agent 与 version 头，必须是合法版本号；空串表示跟随自动同步。
-		normalized := strings.TrimSpace(*req.OpenAICodexClientVersion)
-		if normalized != "" && service.NormalizeCodexClientVersion(normalized) == "" {
+		// 管理员常从 GitHub release 复制 tag（rust-v0.146.0 / v0.146.0），先剥离 tag 前缀再校验；
+		// 入站 UA 解析仍用严格版 NormalizeCodexClientVersion，语义区分见其 doc。
+		raw := strings.TrimSpace(*req.OpenAICodexClientVersion)
+		normalized := service.NormalizeAdminCodexClientVersionInput(raw)
+		if raw != "" && normalized == "" {
 			response.Error(c, http.StatusBadRequest, "openai_codex_client_version must be empty or a valid version (e.g. 0.146.0)")
 			return
 		}
