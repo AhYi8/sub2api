@@ -360,6 +360,7 @@ export default {
       },
       duplicateCheck: {
         apiKeyCheckFailed: '密钥查重服务暂不可用，请稍后重试',
+        apiKeyCheckRejected: '密钥查重请求被拒绝，请检查密钥长度或输入后重试',
         apiKeyExists: '该 API Key 已存在于账号「{name}」',
         allKeysExist: '所有密钥均已存在于其他账号，未创建任何账号',
         skippedKeys: '以下 {count} 条密钥与现有账号重复，已跳过：',

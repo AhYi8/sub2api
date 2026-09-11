@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -121,17 +122,36 @@ func TestCheckAPIKeysDuplicateRejectsOversizedKey(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), "api key too long"+oversized[:50])
 }
 
+func TestCheckAPIKeysDuplicateAcceptsLargeBatch(t *testing.T) {
+	// 查重不限制密钥条数（与批量创建流程对齐——前端逐条创建、无条数上限）：
+	// 大批量请求正常放行并透传全部密钥。
+	// 历史上 binding max=200 曾把批量添加超 200 条的请求 400 拒绝，
+	// 前端只能误报"查重服务不可用"，本用例锁定不再有条数上限。
+	svc := &checkAPIKeysAdminServiceStub{hits: []service.DuplicateAPIKeyHit{}}
+	keys := make([]string, 201)
+	for i := range keys {
+		keys[i] = "key-" + strconv.Itoa(i)
+	}
+	body := `{"platform":"deepseek","api_keys":[` + `"` + strings.Join(keys, `","`) + `"]}`
+
+	rec := postCheckAPIKeys(setupCheckAPIKeysRouter(svc), body)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.True(t, svc.called)
+	require.Len(t, svc.apiKeys, 201)
+}
+
 func TestCheckAPIKeysDuplicateRejectsOversizedBody(t *testing.T) {
-	// 请求体超过 64 KiB 上限：JSON 绑定前即被 MaxBytesReader 拦截为 400
+	// 请求体超过 4 MiB 上限：JSON 绑定前即被 MaxBytesReader 拦截为 400
 	svc := &checkAPIKeysAdminServiceStub{}
 	largeKey := strings.Repeat("b", 1024)
-	// 66 条 1KB 密钥 + JSON 包装 > 64 KiB
-	keys := make([]string, 66)
+	// 4200 条 1KB 密钥 + JSON 包装 > 4 MiB
+	keys := make([]string, 4200)
 	for i := range keys {
 		keys[i] = largeKey
 	}
-	body := `{"platform":"zhipu","api_keys":[` + `"`+strings.Join(keys, `","`)+`"` + `]}`
-	require.Greater(t, len(body), 64*1024)
+	body := `{"platform":"zhipu","api_keys":[` + `"` + strings.Join(keys, `","`) + `"` + `]}`
+	require.Greater(t, len(body), 4*1024*1024)
 
 	rec := postCheckAPIKeys(setupCheckAPIKeysRouter(svc), body)
 

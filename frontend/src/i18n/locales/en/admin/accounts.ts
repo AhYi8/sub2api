@@ -157,6 +157,7 @@ export default {
       },
       duplicateCheck: {
         apiKeyCheckFailed: 'Duplicate check service is unavailable, please retry later',
+        apiKeyCheckRejected: 'Duplicate check request was rejected, please check your key length and input, then retry',
         apiKeyExists: 'This API Key already exists on account "{name}"',
         allKeysExist: 'All API keys already exist on other accounts; nothing was created',
         skippedKeys: 'Skipped {count} key(s) that duplicate existing accounts:',

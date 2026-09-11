@@ -4089,6 +4089,7 @@ const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
 // 国产平台多行批量输入：一行一条 API Key，trim 后过滤空行并去重（保持首次出现顺序）。
 // 与 Grok RT 批量先例一致的拆分方式；去重避免同一密钥重复建号。
+// 查重与批量创建流程一致不限制条数，仅由后端限制单条密钥长度与请求体大小。
 const parsedApiKeys = computed(() => {
   const seen = new Set<string>()
   const keys: string[] = []
@@ -5891,10 +5892,17 @@ const handleSubmit = async () => {
     }
   } catch (err: any) {
     // 仅记录不含请求体的概要信息——Axios 错误对象的 config.data 携带 API Key 明文，
-    // 整体输出会把密钥泄露到浏览器控制台与日志采集
-    const status = err?.response?.status
+    // 整体输出会把密钥泄露到浏览器控制台与日志采集。
+    // apiClient 拦截器 reject 的是平铺错误对象（{ status, message, ... }），非 axios 原生错误
+    const status = err?.status
     console.error('check api keys duplicate failed', status ? `status=${status}` : 'no response')
-    appStore.showError(t('admin.accounts.duplicateCheck.apiKeyCheckFailed'))
+    // 400 是请求参数被后端拒绝（单条密钥超长、请求体超限等输入问题），
+    // 与网络/5xx 的"服务不可用"区分开，避免误导排障方向
+    if (status === 400) {
+      appStore.showError(t('admin.accounts.duplicateCheck.apiKeyCheckRejected'))
+    } else {
+      appStore.showError(t('admin.accounts.duplicateCheck.apiKeyCheckFailed'))
+    }
     return
   } finally {
     // 创建路径（doCreateAccount / submitCNApiKeyBatch）内部各自管理 submitting，

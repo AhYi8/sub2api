@@ -1079,16 +1079,17 @@ func (h *AccountHandler) Create(c *gin.Context) {
 }
 
 const (
-	// 查重请求只携带平台与至多 200 条 API Key，64 KiB 覆盖正常输入并限制资源消耗；
-	// 单条密钥长度上限用于阻止异常超长输入进入比对流程。
-	maxCheckAPIKeysRequestBytes = 64 * 1024
+	// 查重请求不限制密钥条数（与批量创建流程对齐——前端逐条创建、无条数上限），
+	// 仅以请求体大小限制资源消耗：4 MiB 约覆盖 4000 条达到单条上限的密钥，
+	// 或数十万条常规长度密钥；单条密钥长度上限用于阻止异常超长输入进入比对流程。
+	maxCheckAPIKeysRequestBytes = 4 * 1024 * 1024
 	maxCheckAPIKeyBytes         = 1024
 )
 
 // CheckAPIKeysDuplicateRequest 创建账号前的 API Key 查重请求。
 type CheckAPIKeysDuplicateRequest struct {
 	Platform string   `json:"platform" binding:"required,oneof=anthropic openai gemini antigravity grok kimi zhipu deepseek"`
-	APIKeys  []string `json:"api_keys" binding:"required,min=1,max=200,dive,required"`
+	APIKeys  []string `json:"api_keys" binding:"required,min=1,dive,required"`
 }
 
 // CheckAPIKeysDuplicate 返回与同平台已有账号凭据重复的 API Key（含所属账号信息）。

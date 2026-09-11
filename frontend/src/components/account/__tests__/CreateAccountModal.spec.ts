@@ -812,6 +812,28 @@ describe('CreateAccountModal CN provider API key batch creation', () => {
     expect(showErrorMock).toHaveBeenCalledWith('admin.accounts.duplicateCheck.apiKeyCheckFailed')
   })
 
+  it('大批量输入（超过 200 条）不再被条数限制拦截，正常发起查重并逐条创建', async () => {
+    // 查重已与批量创建流程对齐：不限制条数（后端仅限单条长度与请求体大小），
+    // 历史上 binding max=200 曾把这类请求 400 拒绝并被误报为"查重服务不可用"
+    const many = Array.from({ length: 201 }, (_, i) => `key-${i}`).join('\n')
+
+    await submitCnApiKeyAccount('DeepSeek', many, '大批量')
+
+    expect(checkAPIKeysDuplicateMock).toHaveBeenCalledTimes(1)
+    expect(checkAPIKeysDuplicateMock).toHaveBeenCalledWith('deepseek', Array.from({ length: 201 }, (_, i) => `key-${i}`))
+    expect(createAccountMock).toHaveBeenCalledTimes(201)
+  })
+
+  it('查重请求被后端 400 拒绝时提示输入问题而非服务不可用', async () => {
+    // apiClient 拦截器 reject 平铺错误对象（{ status, message }）
+    checkAPIKeysDuplicateMock.mockRejectedValueOnce({ status: 400, message: 'Invalid request' })
+
+    await submitCnApiKeyAccount('Zhipu GLM', 'key-a\nkey-b', '智谱被拒')
+
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(showErrorMock).toHaveBeenCalledWith('admin.accounts.duplicateCheck.apiKeyCheckRejected')
+  })
+
   it('非国产平台单条创建同样查重（命中即阻止）', async () => {
     checkAPIKeysDuplicateMock.mockResolvedValueOnce({
       duplicates: [{ api_key: 'sk-test-api-key', account_id: 5, account_name: '已有 OpenAI 账号' }]
