@@ -787,6 +787,7 @@ type GatewayService struct {
 	modelsListCache       *gocache.Cache
 	modelsListCacheTTL    time.Duration
 	settingService        *SettingService
+	roundRobinCursors     atomic.Pointer[roundRobinCursorManager] // 严格轮询游标（并发安全懒初始化，Redis 失败自动降级进程内）
 	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
 	debugModelRouting     atomic.Bool
 	debugClaudeMimic      atomic.Bool

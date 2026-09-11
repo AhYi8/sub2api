@@ -4936,6 +4936,32 @@
                 <Toggle v-model="form.allow_ungrouped_key_scheduling" />
               </div>
 
+              <!-- 全局账号调度策略 -->
+              <div>
+                <label
+                  for="account-scheduling-strategy"
+                  class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                >
+                  {{ t("admin.settings.scheduling.accountSchedulingStrategy") }}
+                </label>
+                <select
+                  id="account-scheduling-strategy"
+                  v-model="form.account_scheduling_strategy"
+                  class="input mt-2 w-full"
+                  data-testid="account-scheduling-strategy"
+                >
+                  <option value="default">
+                    {{ t("admin.settings.scheduling.accountSchedulingStrategyDefault") }}
+                  </option>
+                  <option value="round_robin">
+                    {{ t("admin.settings.scheduling.accountSchedulingStrategyRoundRobin") }}
+                  </option>
+                </select>
+                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t("admin.settings.scheduling.accountSchedulingStrategyHint") }}
+                </p>
+              </div>
+
               <div class="border-t border-gray-100 pt-4 dark:border-dark-700">
                 <div class="mb-3">
                   <label class="font-medium text-gray-900 dark:text-white">
@@ -9765,6 +9791,7 @@ const form = reactive<SettingsForm>({
   openai_advanced_scheduler_weight_previous_response: "",
   openai_advanced_scheduler_weight_session_sticky: "",
   // Gateway forwarding behavior
+  account_scheduling_strategy: "default",
   openai_ttft_mode: "semantic",
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
@@ -10799,6 +10826,10 @@ async function loadSettings() {
       : defaultFingerprintSignalRows();
     form.login_agreement_mode =
       settings.login_agreement_mode === "checkbox" ? "checkbox" : "modal";
+    form.account_scheduling_strategy =
+      settings.account_scheduling_strategy === "round_robin"
+        ? "round_robin"
+        : "default";
     form.channel_monitor_mode =
       settings.channel_monitor_mode === "v2" ? "v2" : "v1";
     form.channel_monitor_hide_throughput = Boolean(
@@ -11339,6 +11370,10 @@ async function saveSettings() {
       min_claude_code_version: form.min_claude_code_version,
       max_claude_code_version: form.max_claude_code_version,
       allow_ungrouped_key_scheduling: form.allow_ungrouped_key_scheduling,
+      account_scheduling_strategy:
+        form.account_scheduling_strategy === "round_robin"
+          ? "round_robin"
+          : "default",
       openai_ttft_mode:
         form.openai_ttft_mode === "visible" ? "visible" : "semantic",
       enable_fingerprint_unification: form.enable_fingerprint_unification,

@@ -111,6 +111,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	cfg := s.schedulingConfig()
 
+	// 全局账号调度策略：严格轮询模式下跳过粘性读写，候选按 ID 升序 + 游标旋转选择。
+	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx)
+
 	// 检查 Claude Code 客户端限制（可能会替换 groupID 为降级分组）
 	group, groupID, err := s.checkClaudeCodeRestriction(ctx, groupID)
 	if err != nil {
@@ -128,15 +131,19 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		return nil, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
 	}
 
+	// 粘性账号解析：严格轮询模式下完全跳过（含 handler 预取值），
+	// 每次调度都重新轮询候选池；既有绑定保留在缓存中，切回默认策略即恢复。
 	var stickyAccountID int64
 	var stickySource string
-	if prefetch := prefetchedStickyAccountIDFromContext(ctx, groupID); prefetch > 0 {
-		stickyAccountID = prefetch
-		stickySource = "prefetch"
-	} else if sessionHash != "" && s.cache != nil {
-		if accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash); err == nil {
-			stickyAccountID = accountID
-			stickySource = "cache"
+	if !roundRobin {
+		if prefetch := prefetchedStickyAccountIDFromContext(ctx, groupID); prefetch > 0 {
+			stickyAccountID = prefetch
+			stickySource = "prefetch"
+		} else if sessionHash != "" && s.cache != nil {
+			if accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash); err == nil {
+				stickyAccountID = accountID
+				stickySource = "cache"
+			}
 		}
 	}
 
@@ -216,6 +223,17 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		return nil, err
 	}
 	preferOAuth := platform == PlatformGemini
+
+	// 严格轮询：同一次调度内 Layer 1（模型路由，若掉层）与 Layer 2 共用一次
+	// 游标取值，各层按自身候选池大小取模，避免罕见掉层路径二次推进游标。
+	var roundRobinCursor int64 = -1
+	fetchRoundRobinCursor := func() int64 {
+		if roundRobinCursor < 0 {
+			roundRobinCursor = s.nextRoundRobinCursor(ctx, groupID, platform)
+		}
+		return roundRobinCursor
+	}
+
 	if s.debugModelRoutingEnabled() && platform == PlatformAnthropic && requestedModel != "" {
 		logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] load-aware enabled: group_id=%v model=%s session=%s platform=%s", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), platform)
 	}
@@ -456,27 +474,36 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 
 			if len(routingAvailable) > 0 {
-				// 排序：优先级 > 负载率 > 最后使用时间
-				sort.SliceStable(routingAvailable, func(i, j int) bool {
-					a, b := routingAvailable[i], routingAvailable[j]
-					if a.account.Priority != b.account.Priority {
-						return a.account.Priority < b.account.Priority
-					}
-					if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-						return a.loadInfo.LoadRate < b.loadInfo.LoadRate
-					}
-					switch {
-					case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
-						return true
-					case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
-						return false
-					case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
-						return false
-					default:
-						return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
-					}
-				})
-				shuffleWithinSortGroups(routingAvailable)
+				// 排序：轮询模式按 ID 升序稳定排序后从游标位旋转；
+				// 默认模式按 优先级 > 负载率 > 最后使用时间
+				if roundRobin {
+					sort.SliceStable(routingAvailable, func(i, j int) bool {
+						return routingAvailable[i].account.ID < routingAvailable[j].account.ID
+					})
+					start := rotateStartIndex(fetchRoundRobinCursor(), len(routingAvailable))
+					routingAvailable = append(routingAvailable[start:], routingAvailable[:start]...)
+				} else {
+					sort.SliceStable(routingAvailable, func(i, j int) bool {
+						a, b := routingAvailable[i], routingAvailable[j]
+						if a.account.Priority != b.account.Priority {
+							return a.account.Priority < b.account.Priority
+						}
+						if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+							return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+						}
+						switch {
+						case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
+							return true
+						case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
+							return false
+						case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
+							return false
+						default:
+							return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
+						}
+					})
+					shuffleWithinSortGroups(routingAvailable)
+				}
 
 				// 4. 尝试获取槽位
 				for _, item := range routingAvailable {
@@ -487,7 +514,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 							result.ReleaseFunc() // 释放槽位，继续尝试下一个账号
 							continue
 						}
-						if sessionHash != "" && s.cache != nil {
+						// 严格轮询模式下不写粘性绑定，避免轮询语义被后续请求的粘性命中打破
+						if sessionHash != "" && s.cache != nil && !roundRobin {
 							_ = s.bindGatewayStickySessionDuringSelection(ctx, groupID, sessionHash, item.account.ID)
 						}
 						if s.debugModelRoutingEnabled() {
@@ -715,6 +743,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, accountLoads)
 	if err != nil {
+		// 负载批量读取失败的降级路径：按 priority+LRU 传统顺序抢槽。
+		// 严格轮询在此路径不生效（退化为 priority 序），保可用性优先。
 		if result, ok, legacyErr := s.tryAcquireByLegacyOrder(ctx, candidates, groupID, sessionHash, preferOAuth); legacyErr != nil {
 			return nil, legacyErr
 		} else if ok {
@@ -735,44 +765,65 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 		}
 
-		// 分层过滤选择：优先级 →（可选）最早重置 → 负载率 → LRU
-		for len(available) > 0 {
-			// 1. 取优先级最小的集合
-			candidates := filterByMinPriority(available)
-			// 2. （可选）use-it-or-lose-it：优先选用会话窗口最早重置的账号
-			if cfg.PreferSoonestReset {
-				candidates = filterBySoonestReset(candidates)
-			}
-			// 3. 取负载率最低的集合
-			candidates = filterByMinLoadRate(candidates)
-			// 4. LRU 选择最久未用的账号
-			selected := selectByLRU(candidates, preferOAuth)
-			if selected == nil {
-				break
-			}
-
-			result, err := s.tryAcquireAccountSlot(ctx, selected.account.ID, selected.account.Concurrency)
-			if err == nil && result.Acquired {
-				// 会话数量限制检查
-				if !s.checkAndRegisterSession(ctx, selected.account, sessionHash) {
-					result.ReleaseFunc() // 释放槽位，继续尝试下一个账号
-				} else {
-					if sessionHash != "" && s.cache != nil {
-						_ = s.bindGatewayStickySessionDuringSelection(ctx, groupID, sessionHash, selected.account.ID)
+		if roundRobin {
+			// 严格轮询：ID 升序稳定排序后从游标位绕圈抢槽；满槽账号直接跳过
+			// 继续下一个候选，全部满员时落入 Layer 3 兜底排队。不读写粘性绑定。
+			sort.SliceStable(available, func(i, j int) bool {
+				return available[i].account.ID < available[j].account.ID
+			})
+			start := rotateStartIndex(fetchRoundRobinCursor(), len(available))
+			available = append(available[start:], available[:start]...)
+			for _, item := range available {
+				result, err := s.tryAcquireAccountSlot(ctx, item.account.ID, item.account.Concurrency)
+				if err == nil && result.Acquired {
+					// 会话数量限制检查
+					if !s.checkAndRegisterSession(ctx, item.account, sessionHash) {
+						result.ReleaseFunc() // 释放槽位，继续尝试下一个账号
+						continue
 					}
-					return s.newSelectionResult(ctx, selected.account, true, result.ReleaseFunc, nil)
+					return s.newSelectionResult(ctx, item.account, true, result.ReleaseFunc, nil)
 				}
 			}
+		} else {
+			// 分层过滤选择：优先级 →（可选）最早重置 → 负载率 → LRU
+			for len(available) > 0 {
+				// 1. 取优先级最小的集合
+				candidates := filterByMinPriority(available)
+				// 2. （可选）use-it-or-lose-it：优先选用会话窗口最早重置的账号
+				if cfg.PreferSoonestReset {
+					candidates = filterBySoonestReset(candidates)
+				}
+				// 3. 取负载率最低的集合
+				candidates = filterByMinLoadRate(candidates)
+				// 4. LRU 选择最久未用的账号
+				selected := selectByLRU(candidates, preferOAuth)
+				if selected == nil {
+					break
+				}
 
-			// 移除已尝试的账号，重新进行分层过滤
-			selectedID := selected.account.ID
-			newAvailable := make([]accountWithLoad, 0, len(available)-1)
-			for _, acc := range available {
-				if acc.account.ID != selectedID {
-					newAvailable = append(newAvailable, acc)
+				result, err := s.tryAcquireAccountSlot(ctx, selected.account.ID, selected.account.Concurrency)
+				if err == nil && result.Acquired {
+					// 会话数量限制检查
+					if !s.checkAndRegisterSession(ctx, selected.account, sessionHash) {
+						result.ReleaseFunc() // 释放槽位，继续尝试下一个账号
+					} else {
+						if sessionHash != "" && s.cache != nil {
+							_ = s.bindGatewayStickySessionDuringSelection(ctx, groupID, sessionHash, selected.account.ID)
+						}
+						return s.newSelectionResult(ctx, selected.account, true, result.ReleaseFunc, nil)
+					}
 				}
+
+				// 移除已尝试的账号，重新进行分层过滤
+				selectedID := selected.account.ID
+				newAvailable := make([]accountWithLoad, 0, len(available)-1)
+				for _, acc := range available {
+					if acc.account.ID != selectedID {
+						newAvailable = append(newAvailable, acc)
+					}
+				}
+				available = newAvailable
 			}
-			available = newAvailable
 		}
 	}
 

@@ -887,10 +887,14 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 		return nil, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
 	}
 
-	// 1. 尝试粘性会话命中
+	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx)
+
+	// 1. 尝试粘性会话命中（严格轮询模式下跳过读取，既有绑定保留在缓存中）
 	// Try sticky session hit
-	if account := s.tryStickySessionHit(ctx, groupID, platform, sessionHash, requestedModel, excludedIDs, requireCompact, stickyAccountID, requiredCapability); account != nil {
-		return account, nil
+	if !roundRobin {
+		if account := s.tryStickySessionHit(ctx, groupID, platform, sessionHash, requestedModel, excludedIDs, requireCompact, stickyAccountID, requiredCapability); account != nil {
+			return account, nil
+		}
 	}
 
 	// 2. 获取可调度的 OpenAI 账号
@@ -914,9 +918,10 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 	}
 
 	// 4. 设置粘性会话绑定（利润门下推迟到 handler 终检通过后再绑定，
-	// 终检否决的账号不得成为新的粘性目标；无门保持既有 eager 绑定与 TTL）
+	// 终检否决的账号不得成为新的粘性目标；无门保持既有 eager 绑定与 TTL。
+	// 严格轮询模式下不写绑定，切回默认策略后由后续请求重新建立。）
 	// Set sticky session binding (deferred until terminal admission under a profit gate)
-	if sessionHash != "" && !gatewayProfitControlGateActive(ctx) {
+	if sessionHash != "" && !roundRobin && !gatewayProfitControlGateActive(ctx) {
 		_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, selected.ID, openaiStickySessionTTL)
 	}
 
@@ -1051,6 +1056,12 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	if len(eligible) == 0 {
 		return nil, compactBlocked, filterStats
 	}
+	// 严格轮询策略：跳过优先级/上游成本/LRU 排序（排序结果会被旋转完全覆盖，
+	// 提前分支避免白做），候选按 ID 升序 + 游标旋转后取起点。
+	if s.accountSchedulingRoundRobinEnabled(ctx) {
+		eligible = s.rotateOpenAIAccountsRoundRobin(ctx, groupID, platform, eligible, compactTiers, requireCompact)
+		return eligible[0], compactBlocked, filterStats
+	}
 	rateOrder := openAILegacyUpstreamRateOrder{}
 	if preferLowUpstreamRate {
 		rateOrder = newOpenAILegacyUpstreamRateOrder(eligible, time.Now(), s.openAIOAuthSchedulingRateMultiplier(ctx))
@@ -1123,8 +1134,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	cfg := s.schedulingConfig()
 	preferLowUpstreamRate := useUpstreamTokenCost && s.isOpenAILowUpstreamRatePriorityEnabled(ctx)
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
+	// 严格轮询策略：跳过粘性读取，每次调度重新轮询候选池（Layer 1 因 stickyAccountID=0 自然跳过）。
+	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx)
 	var stickyAccountID int64
-	if sessionHash != "" && s.cache != nil {
+	if !roundRobin && sessionHash != "" && s.cache != nil {
 		if accountID, err := s.getStickySessionAccountID(ctx, groupID, sessionHash); err == nil {
 			stickyAccountID = accountID
 		}
@@ -1309,30 +1322,39 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			return nil, false, nil
 		}
 
-		sort.SliceStable(available, func(i, j int) bool {
-			a, b := available[i], available[j]
-			if a.account.Priority != b.account.Priority {
-				return a.account.Priority < b.account.Priority
-			}
-			if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-				return a.loadInfo.LoadRate < b.loadInfo.LoadRate
-			}
-			switch {
-			case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
-				return true
-			case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
-				return false
-			case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
-				return false
-			default:
-				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
-			}
-		})
-		shuffleWithinSortGroups(available)
-		if rateOrder.enabled {
+		// 严格轮询策略：ID 升序稳定排序后从游标位旋转，绕圈抢槽；不按优先级/上游成本排序。
+		if roundRobin {
 			sort.SliceStable(available, func(i, j int) bool {
-				return rateOrder.compare(available[i].account, available[j].account) < 0
+				return available[i].account.ID < available[j].account.ID
 			})
+			start := s.nextRoundRobinStart(ctx, groupID, platform, len(available))
+			available = append(available[start:], available[:start]...)
+		} else {
+			sort.SliceStable(available, func(i, j int) bool {
+				a, b := available[i], available[j]
+				if a.account.Priority != b.account.Priority {
+					return a.account.Priority < b.account.Priority
+				}
+				if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+					return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+				}
+				switch {
+				case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
+					return true
+				case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
+					return false
+				case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
+					return false
+				default:
+					return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
+				}
+			})
+			shuffleWithinSortGroups(available)
+			if rateOrder.enabled {
+				sort.SliceStable(available, func(i, j int) bool {
+					return rateOrder.compare(available[i].account, available[j].account) < 0
+				})
+			}
 		}
 
 		selectionOrder := make([]accountWithLoad, 0, len(available))
@@ -1372,7 +1394,8 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				if selectErr != nil {
 					return nil, true, selectErr
 				}
-				if sessionHash != "" && !stickySpillover && !gatewayProfitControlGateActive(ctx) {
+				// 严格轮询模式下不写粘性绑定，避免轮询语义被后续粘性命中打破
+				if sessionHash != "" && !stickySpillover && !roundRobin && !gatewayProfitControlGateActive(ctx) {
 					_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, openaiStickySessionTTL)
 				}
 				return selection, true, nil
@@ -1383,6 +1406,8 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 
 	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, accountLoads)
 	if err != nil {
+		// 负载批量读取失败的降级路径：按 priority+LRU 传统顺序抢槽。
+		// 严格轮询在此路径不生效（退化为 priority 序），保可用性优先。
 		ordered := append([]*Account(nil), candidates...)
 		sortAccountsByPriorityAndLastUsed(ordered, false)
 		if rateOrder.enabled {
@@ -1411,7 +1436,8 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				if selectErr != nil {
 					return nil, selectErr
 				}
-				if sessionHash != "" && !stickySpillover && !gatewayProfitControlGateActive(ctx) {
+				// 严格轮询模式下不写粘性绑定，避免轮询语义被后续粘性命中打破
+				if sessionHash != "" && !stickySpillover && !roundRobin && !gatewayProfitControlGateActive(ctx) {
 					_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, openaiStickySessionTTL)
 				}
 				return selection, nil
@@ -1422,7 +1448,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			return nil, selectErr
 		} else if selection != nil {
 			return selection, nil
-		} else if attempted {
+		} else if attempted && !roundRobin {
+			// 严格轮询模式下跳过新鲜负载重算：重约会再次推进轮询游标，
+			// 破坏「每次调度推进一次游标」的严格性；轮询序本身已是穷举探测。
 			if freshLoadMap, loadErr := s.concurrencyService.GetAccountsLoadBatchFresh(ctx, accountLoads); loadErr == nil {
 				if selection, _, selectErr := tryAcquireFromLoadMap(freshLoadMap); selectErr != nil {
 					return nil, selectErr

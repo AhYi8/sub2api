@@ -243,6 +243,7 @@ type UpdateSettingsRequest struct {
 	BackendModeEnabled bool `json:"backend_mode_enabled"`
 
 	// Gateway forwarding behavior
+	AccountSchedulingStrategy              *string `json:"account_scheduling_strategy"`
 	OpenAITTFTMode                         *string `json:"openai_ttft_mode"`
 	EnableFingerprintUnification           *bool   `json:"enable_fingerprint_unification"`
 	EnableMetadataPassthrough              *bool   `json:"enable_metadata_passthrough"`
@@ -1683,6 +1684,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 				return *req.EnableFingerprintUnification
 			}
 			return previousSettings.EnableFingerprintUnification
+		}(),
+		AccountSchedulingStrategy: func() string {
+			if req.AccountSchedulingStrategy != nil {
+				return *req.AccountSchedulingStrategy
+			}
+			return previousSettings.AccountSchedulingStrategy
 		}(),
 		OpenAITTFTMode: func() string {
 			if req.OpenAITTFTMode != nil {

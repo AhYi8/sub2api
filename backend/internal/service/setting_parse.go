@@ -846,6 +846,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 
 	// Gateway forwarding behavior (defaults: fingerprint=true, metadata_passthrough=false,
 	// cch_signing=false, claude_oauth_system_prompt_injection=true)
+	result.AccountSchedulingStrategy = normalizeAccountSchedulingStrategy(settings[SettingKeyAccountSchedulingStrategy])
 	result.OpenAITTFTMode = normalizeOpenAITTFTMode(settings[SettingKeyOpenAITTFTMode])
 	if v, ok := settings[SettingKeyEnableFingerprintUnification]; ok && v != "" {
 		result.EnableFingerprintUnification = v == "true"
@@ -985,6 +986,15 @@ func normalizeOpenAITTFTMode(mode string) string {
 		return OpenAITTFTModeVisible
 	}
 	return OpenAITTFTModeSemantic
+}
+
+// normalizeAccountSchedulingStrategy 归一化全局账号调度策略，未知值一律回退 default，
+// 保证读取侧永远拿到合法枚举（与 TTFT mode 的容错口径一致）。
+func normalizeAccountSchedulingStrategy(strategy string) string {
+	if strings.EqualFold(strings.TrimSpace(strategy), AccountSchedulingStrategyRoundRobin) {
+		return AccountSchedulingStrategyRoundRobin
+	}
+	return AccountSchedulingStrategyDefault
 }
 
 func clampAffiliateRebateRate(value float64) float64 {

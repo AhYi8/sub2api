@@ -619,6 +619,14 @@ const (
 	// SettingKeyBackendModeEnabled Backend 模式：禁用用户注册和自助服务，仅管理员可登录
 	SettingKeyBackendModeEnabled = "backend_mode_enabled"
 
+	// Gateway account scheduling strategy
+	// SettingKeyAccountSchedulingStrategy 全局账号调度策略：default=现有粘性+负载感知；
+	// round_robin=对通过可用性过滤的候选池做严格轮询（轮询期间不读写 session 粘性绑定，
+	// previous_response_id 与守护父账号两层硬粘保留）。
+	SettingKeyAccountSchedulingStrategy = "account_scheduling_strategy"
+	AccountSchedulingStrategyDefault    = "default"
+	AccountSchedulingStrategyRoundRobin = "round_robin"
+
 	// Gateway Forwarding Behavior
 	// SettingKeyOpenAITTFTMode 控制 first_token_ms 的统计口径。
 	SettingKeyOpenAITTFTMode = "openai_ttft_mode"

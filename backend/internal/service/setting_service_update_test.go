@@ -459,6 +459,29 @@ func TestSettingService_UpdateSettingsRejectsInvalidOpenAIOAuthSchedulingRateMul
 	}
 }
 
+// TestSettingService_UpdateSettings_AccountSchedulingStrategy 校验全局账号调度策略枚举：
+// 合法值放行，非法值拒绝；空值由 normalize 回退 default 不报错。
+func TestSettingService_UpdateSettings_AccountSchedulingStrategy(t *testing.T) {
+	repo := &settingUpdateRepoStub{}
+	svc := NewSettingService(repo, &config.Config{})
+	ctx := context.Background()
+
+	require.NoError(t, svc.UpdateSettings(ctx, &SystemSettings{AccountSchedulingStrategy: AccountSchedulingStrategyRoundRobin}))
+	require.NoError(t, svc.UpdateSettings(ctx, &SystemSettings{AccountSchedulingStrategy: AccountSchedulingStrategyDefault}))
+	require.NoError(t, svc.UpdateSettings(ctx, &SystemSettings{AccountSchedulingStrategy: ""}))
+	require.Error(t, svc.UpdateSettings(ctx, &SystemSettings{AccountSchedulingStrategy: "least_connections"}))
+}
+
+// TestSettingService_ParseSettings_AccountSchedulingStrategyFallback 校验解析侧容错：
+// 未配置或非法值一律归一化为 default，读取侧永远拿到合法枚举。
+func TestSettingService_ParseSettings_AccountSchedulingStrategyFallback(t *testing.T) {
+	svc := NewSettingService(&settingUpdateRepoStub{}, &config.Config{})
+
+	require.Equal(t, AccountSchedulingStrategyDefault, svc.parseSettings(map[string]string{}).AccountSchedulingStrategy)
+	require.Equal(t, AccountSchedulingStrategyRoundRobin, svc.parseSettings(map[string]string{SettingKeyAccountSchedulingStrategy: "round_robin"}).AccountSchedulingStrategy)
+	require.Equal(t, AccountSchedulingStrategyDefault, svc.parseSettings(map[string]string{SettingKeyAccountSchedulingStrategy: "garbage"}).AccountSchedulingStrategy)
+}
+
 func TestSettingService_UpdateSettings_OpenAIAdvancedSchedulerWeightSums(t *testing.T) {
 	maxFloat := strconv.FormatFloat(math.MaxFloat64, 'g', -1, 64)
 	tests := []struct {

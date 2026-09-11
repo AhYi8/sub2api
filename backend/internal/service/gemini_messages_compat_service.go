@@ -16,7 +16,9 @@ import (
 	mathrand "math/rand"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -55,6 +57,7 @@ type GeminiMessagesCompatService struct {
 	antigravityGatewayService *AntigravityGatewayService
 	cfg                       *config.Config
 	responseHeaderFilter      *responseheaders.CompiledHeaderFilter
+	roundRobinCursors         atomic.Pointer[roundRobinCursorManager] // 严格轮询游标（并发安全懒初始化，Redis 失败自动降级进程内）
 }
 
 func (s *GeminiMessagesCompatService) readUpstreamErrorBody(resp *http.Response) []byte {
@@ -113,10 +116,16 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 
 	cacheKey := "gemini:" + sessionHash
 
+	// 严格轮询策略：跳过粘性读写，每次调度重新轮询候选池；
+	// 既有绑定保留在缓存中，切回默认策略即恢复。
+	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx)
+
 	// 2. 尝试粘性会话命中
 	// Try sticky session hit
-	if account := s.tryStickySessionHit(ctx, groupID, sessionHash, cacheKey, requestedModel, excludedIDs, platform, useMixedScheduling); account != nil {
-		return account, nil
+	if !roundRobin {
+		if account := s.tryStickySessionHit(ctx, groupID, sessionHash, cacheKey, requestedModel, excludedIDs, platform, useMixedScheduling); account != nil {
+			return account, nil
+		}
 	}
 
 	// 3. 查询可调度账户（强制平台模式：优先按分组查找，找不到再查全部）
@@ -133,9 +142,9 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 		}
 	}
 
-	// 4. 按优先级 + LRU 选择最佳账号
+	// 4. 按优先级 + LRU 选择最佳账号（严格轮询模式下改为 ID 升序 + 游标旋转）
 	// Select best account by priority + LRU
-	selected := s.selectBestGeminiAccount(ctx, accounts, requestedModel, excludedIDs, platform, useMixedScheduling)
+	selected := s.selectBestGeminiAccount(ctx, groupID, accounts, requestedModel, excludedIDs, platform, useMixedScheduling)
 
 	if selected == nil {
 		if requestedModel != "" {
@@ -144,9 +153,9 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 		return nil, errors.New("no available Gemini accounts")
 	}
 
-	// 5. 设置粘性会话绑定
+	// 5. 设置粘性会话绑定（严格轮询模式下不写，切回默认策略后重新建立）
 	// Set sticky session binding
-	if sessionHash != "" {
+	if sessionHash != "" && !roundRobin {
 		_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), cacheKey, selected.ID, geminiStickySessionTTL)
 	}
 
@@ -322,6 +331,7 @@ func (s *GeminiMessagesCompatService) passesRateLimitPreCheckWithCache(ctx conte
 // Returns nil if no available account.
 func (s *GeminiMessagesCompatService) selectBestGeminiAccount(
 	ctx context.Context,
+	groupID *int64,
 	accounts []Account,
 	requestedModel string,
 	excludedIDs map[int64]struct{},
@@ -329,6 +339,8 @@ func (s *GeminiMessagesCompatService) selectBestGeminiAccount(
 	useMixedScheduling bool,
 ) *Account {
 	var selected *Account
+	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx)
+	var roundRobinPool []*Account
 	precheckResult := s.buildPreCheckUsageResultMap(ctx, accounts, requestedModel)
 
 	for i := range accounts {
@@ -344,6 +356,12 @@ func (s *GeminiMessagesCompatService) selectBestGeminiAccount(
 			continue
 		}
 
+		// 严格轮询：收集全部可用候选，稍后按 ID 升序 + 游标旋转取起点
+		if roundRobin {
+			roundRobinPool = append(roundRobinPool, acc)
+			continue
+		}
+
 		// 选择最佳账号
 		if selected == nil {
 			selected = acc
@@ -353,6 +371,14 @@ func (s *GeminiMessagesCompatService) selectBestGeminiAccount(
 		if s.isBetterGeminiAccount(acc, selected) {
 			selected = acc
 		}
+	}
+
+	if roundRobin && len(roundRobinPool) > 0 {
+		sort.SliceStable(roundRobinPool, func(i, j int) bool {
+			return roundRobinPool[i].ID < roundRobinPool[j].ID
+		})
+		start := s.nextRoundRobinStart(ctx, groupID, platform, len(roundRobinPool))
+		selected = roundRobinPool[start]
 	}
 
 	return selected

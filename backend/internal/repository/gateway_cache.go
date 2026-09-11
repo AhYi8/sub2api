@@ -18,6 +18,18 @@ const stickySessionPrefix = "sticky_session:"
 const openAIResponsesSessionWindowPrefix = "openai_responses_session_window:"
 const liveCallPrefix = "live:call:"
 
+// schedulingRoundRobinCursorPrefix 严格轮询调度策略的游标 key 前缀，
+// 完整 key 为 {prefix}{groupID}:{platform}。
+const schedulingRoundRobinCursorPrefix = "scheduling_rr_cursor:"
+
+// incrSchedulingRoundRobinCursorScript 原子完成 INCR + 滑动续期：
+// 每次访问都重置 TTL（等效滑动过期），长期无请求的分组游标自动清理。
+var incrSchedulingRoundRobinCursorScript = redis.NewScript(`
+local value = redis.call('INCR', KEYS[1])
+redis.call('PEXPIRE', KEYS[1], ARGV[1])
+return value
+`)
+
 type gatewayCache struct {
 	rdb *redis.Client
 }
@@ -34,6 +46,20 @@ func buildSessionKey(groupID int64, sessionHash string) string {
 
 func buildOpenAIResponsesSessionWindowKey(groupID int64, sessionHash string) string {
 	return fmt.Sprintf("%s%d:%s", openAIResponsesSessionWindowPrefix, groupID, sessionHash)
+}
+
+// NextRoundRobinCursor 原子递增指定作用域的严格轮询游标并返回新值（从 1 开始）。
+// 由 service.SchedulingCursorStore 接口消费，用于跨实例一致的轮询调度。
+func (c *gatewayCache) NextRoundRobinCursor(ctx context.Context, scope string) (int64, error) {
+	if c == nil || c.rdb == nil {
+		return 0, errors.New("gateway cache unavailable")
+	}
+	return incrSchedulingRoundRobinCursorScript.Run(
+		ctx,
+		c.rdb,
+		[]string{schedulingRoundRobinCursorPrefix + scope},
+		service.SchedulingRoundRobinCursorTTL.Milliseconds(),
+	).Int64()
 }
 
 func (c *gatewayCache) GetSessionAccountID(ctx context.Context, groupID int64, sessionHash string) (int64, error) {
@@ -226,6 +252,7 @@ func (c *gatewayCache) ReleaseGrokVideoBilled(ctx context.Context, key string) e
 // Compile-time assertion: gatewayCache must implement CyberSessionBlockStore.
 var _ service.CyberSessionBlockStore = (*gatewayCache)(nil)
 var _ service.LiveCallStore = (*gatewayCache)(nil)
+var _ service.SchedulingCursorStore = (*gatewayCache)(nil)
 
 const reasoningContentPrefix = "reasoning_content:"
 

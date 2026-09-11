@@ -77,6 +77,10 @@ type OpenAIAccountScheduleRequest struct {
 	StickyWeighted          bool
 	SubscriptionPriority    bool
 	PreserveStickyBinding   bool
+	// RoundRobin 严格轮询策略：跳过 session 粘性读写与 top-K 加权随机，
+	// 候选按 ID 升序 + 游标旋转选择。previous_response_id 与 guardian_parent
+	// 两层硬粘不受影响（上游会话状态绑定账号，打破会导致功能损坏）。
+	RoundRobin              bool
 	RequirePrivacySet       bool
 	PreviousResponseID      string
 	PreviousResponseCanMove bool
@@ -421,7 +425,9 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			decision.StickyPreviousHit = true
 			decision.SelectedAccountID = selection.Account.ID
 			decision.SelectedAccountType = selection.Account.Type
-			if req.SessionHash != "" {
+			// 严格轮询模式下不写 session 粘性绑定：previous_response 层命中是上游
+			// 会话状态的硬约束，但不应为该会话建立可在默认策略下复用的粘性绑定。
+			if req.SessionHash != "" && !req.RoundRobin {
 				_ = s.service.bindOpenAIStickySessionDuringSelection(ctx, req.GroupID, req.SessionHash, selection.Account.ID)
 			}
 			return selection, decision, nil
@@ -445,7 +451,9 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		}
 	}
 
-	if !req.StickyWeighted {
+	// session_hash 硬粘层在严格轮询模式下整体跳过（stickyAccountID 已在入口置 0，
+	// 此处为双重防御），候选改由 load_balance 层按轮询序选择。
+	if !req.StickyWeighted && !req.RoundRobin {
 		selection, escapedSticky, err := s.selectBySessionHash(ctx, req)
 		if err != nil {
 			return nil, decision, err
@@ -489,6 +497,12 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
 ) (*AccountSelectionResult, bool, error) {
+	// 严格轮询模式下不做 session 粘性读取，也不清理既有绑定（切回默认策略后仍可用）。
+	// 例外：guardian_parent 守护绑定层经由显式 StickyAccountID 传入守护账号（不走
+	// Redis 读取），属于必须保留的硬粘层（上游会话状态绑定账号），不受轮询影响。
+	if req.RoundRobin && req.StickyAccountID <= 0 {
+		return nil, false, nil
+	}
 	sessionHash := strings.TrimSpace(req.SessionHash)
 	if sessionHash == "" || s == nil || s.service == nil || s.service.cache == nil {
 		return nil, false, nil
@@ -893,7 +907,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		candidateCount:            len(candidates),
 	}
 	if len(candidates) == 0 {
-		plan.selectionOrder = s.buildOpenAISelectionOrder(req, plan)
+		plan.selectionOrder = s.buildOpenAISelectionOrder(ctx, req, plan)
 		return plan
 	}
 
@@ -1037,17 +1051,35 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		plan.topK = 1
 	}
 
-	plan.selectionOrder = s.buildOpenAISelectionOrder(req, plan)
+	plan.selectionOrder = s.buildOpenAISelectionOrder(ctx, req, plan)
 	return plan
 }
 
 func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
+	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
 	plan openAIAccountLoadPlan,
 ) []openAIAccountCandidateScore {
+	// 严格轮询：同一次调度（含 RequireCompact 的 supported/unknown 两池）只推进
+	// 一次游标，各池按自身大小对同一游标值取模，保证轮换相位不被双池拆分污染。
+	var roundRobinCursor int64 = -1
+	roundRobinStart := func(poolSize int) int {
+		if poolSize <= 1 {
+			return 0
+		}
+		if roundRobinCursor < 0 {
+			roundRobinCursor = s.service.nextRoundRobinCursor(ctx, req.GroupID, req.Platform)
+		}
+		return rotateStartIndex(roundRobinCursor, poolSize)
+	}
 	buildSelectionOrder := func(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
 		if len(pool) == 0 || plan.topK <= 0 {
 			return nil
+		}
+		// 严格轮询：跳过 top-K 截断、粘性置前与加权随机，
+		// 全池按 ID 升序 + 游标旋转，保证连续调度不重号。
+		if req.RoundRobin {
+			return rotateOpenAICandidatesWithStart(req, pool, roundRobinStart)
 		}
 		groupTopK := plan.topK
 		if groupTopK > len(pool) {
@@ -1589,7 +1621,9 @@ func (s *defaultOpenAIAccountScheduler) trySelectByLoadBalancePool(
 		return attempt
 	}
 
-	if s.service.concurrencyService != nil && !budget.acquireExhausted() {
+	// 严格轮询模式下跳过新鲜负载重算：轮询序本身逐个绕圈抢槽即为穷举探测，
+	// 且重约会再次构建 plan 并推进轮询游标，破坏「每次调度推进一次游标」的严格性。
+	if s.service.concurrencyService != nil && !budget.acquireExhausted() && !req.RoundRobin {
 		loadReq := buildOpenAIAccountLoadRequest(filtered)
 		if freshLoadMap, loadErr := s.service.concurrencyService.GetAccountsLoadBatchFresh(ctx, loadReq); loadErr == nil {
 			freshPlan := s.buildOpenAIAccountLoadPlan(ctx, req, filtered, freshLoadMap)
@@ -2339,8 +2373,11 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 		return nil, decision, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
 	}
 
+	// 严格轮询策略：粘性账号（会话绑定与 previous_response 置前）完全不参与，
+	// 每次调度都重新轮询候选池；既有绑定保留在缓存中，切回默认策略即恢复。
+	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx)
 	var stickyAccountID int64
-	if sessionHash != "" && s.cache != nil {
+	if !roundRobin && sessionHash != "" && s.cache != nil {
 		if accountID, err := s.getStickySessionAccountID(ctx, groupID, sessionHash); err == nil && accountID > 0 {
 			stickyAccountID = accountID
 		}
@@ -2348,7 +2385,7 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 	stickyWeighted := s.isOpenAIAdvancedSchedulerStickyWeightedEnabled(ctx)
 	subscriptionPriority := s.isOpenAIAdvancedSchedulerSubscriptionPriorityEnabled(ctx)
 	stickyPreviousAccountID := int64(0)
-	if stickyWeighted && previousResponseCanMove && strings.TrimSpace(previousResponseID) != "" && platform == PlatformOpenAI {
+	if !roundRobin && stickyWeighted && previousResponseCanMove && strings.TrimSpace(previousResponseID) != "" && platform == PlatformOpenAI {
 		stickyPreviousAccountID = s.ResolveAccountIDByPreviousResponseIDForScheduler(ctx, groupID, previousResponseID, requestedModel, excludedIDs, requiredCapability, requireCompact)
 	}
 
@@ -2362,6 +2399,7 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 		StickyWeighted:          stickyWeighted,
 		SubscriptionPriority:    subscriptionPriority,
 		PreserveStickyBinding:   preserveGuardianParentBinding,
+		RoundRobin:              roundRobin,
 		RequirePrivacySet:       s.openAIGroupRequiresPrivacySet(ctx, groupID),
 		PreviousResponseID:      previousResponseID,
 		PreviousResponseCanMove: previousResponseCanMove,

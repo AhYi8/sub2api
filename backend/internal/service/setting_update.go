@@ -460,6 +460,14 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyBackendModeEnabled] = strconv.FormatBool(settings.BackendModeEnabled)
 
 	// Gateway forwarding behavior
+	// 全局账号调度策略（default / round_robin），未知值由 normalize 回退 default。
+	strategy := normalizeAccountSchedulingStrategy(settings.AccountSchedulingStrategy)
+	if strings.TrimSpace(settings.AccountSchedulingStrategy) != "" &&
+		strings.ToLower(strings.TrimSpace(settings.AccountSchedulingStrategy)) != AccountSchedulingStrategyDefault &&
+		strings.ToLower(strings.TrimSpace(settings.AccountSchedulingStrategy)) != AccountSchedulingStrategyRoundRobin {
+		return nil, fmt.Errorf("%s must be one of: %s/%s", SettingKeyAccountSchedulingStrategy, AccountSchedulingStrategyDefault, AccountSchedulingStrategyRoundRobin)
+	}
+	updates[SettingKeyAccountSchedulingStrategy] = strategy
 	mode := normalizeOpenAITTFTMode(settings.OpenAITTFTMode)
 	if strings.TrimSpace(settings.OpenAITTFTMode) != "" && strings.ToLower(strings.TrimSpace(settings.OpenAITTFTMode)) != OpenAITTFTModeSemantic && strings.ToLower(strings.TrimSpace(settings.OpenAITTFTMode)) != OpenAITTFTModeVisible {
 		return nil, fmt.Errorf("%s must be one of: %s/%s", SettingKeyOpenAITTFTMode, OpenAITTFTModeSemantic, OpenAITTFTModeVisible)
@@ -702,6 +710,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	})
 	gatewayForwardingSF.Forget("gateway_forwarding")
 	gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
+		accountSchedulingStrategy:        normalizeAccountSchedulingStrategy(settings.AccountSchedulingStrategy),
 		openAITTFTMode:                   normalizeOpenAITTFTMode(settings.OpenAITTFTMode),
 		fingerprintUnification:           settings.EnableFingerprintUnification,
 		metadataPassthrough:              settings.EnableMetadataPassthrough,

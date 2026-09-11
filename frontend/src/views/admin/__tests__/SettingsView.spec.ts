@@ -485,6 +485,7 @@ const baseSettingsResponse = {
   min_claude_code_version: "",
   max_claude_code_version: "",
   allow_ungrouped_key_scheduling: false,
+  account_scheduling_strategy: "default",
   openai_ttft_mode: "semantic",
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
@@ -1404,6 +1405,35 @@ describe("admin SettingsView payment visible method controls", () => {
 
     const payload = updateSettings.mock.calls.at(-1)?.[0] as Record<string, unknown>;
     expect(payload.openai_ttft_mode).toBe("semantic");
+  });
+
+  it("loads and saves the account scheduling strategy", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      account_scheduling_strategy: "round_robin",
+    });
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openGatewayTab(wrapper);
+
+    const strategySelect = wrapper.get('[data-testid="account-scheduling-strategy"]');
+    expect((strategySelect.element as HTMLSelectElement).value).toBe("round_robin");
+
+    await strategySelect.setValue("default");
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    const payload = updateSettings.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(payload.account_scheduling_strategy).toBe("default");
+
+    // 正向路径：选择严格轮询并保存
+    await strategySelect.setValue("round_robin");
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    const roundRobinPayload = updateSettings.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(roundRobinPayload.account_scheduling_strategy).toBe("round_robin");
   });
 
   it("loads fail-safe-off Ollama Cloud usage refresh settings and saves an explicit opt-in", async () => {

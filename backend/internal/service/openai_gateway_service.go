@@ -450,6 +450,7 @@ type OpenAIGatewayService struct {
 	channelService        *ChannelService
 	balanceNotifyService  *BalanceNotifyService
 	settingService        *SettingService
+	roundRobinCursors     atomic.Pointer[roundRobinCursorManager] // 严格轮询游标（并发安全懒初始化，Redis 失败自动降级进程内）
 	userPlatformQuotaRepo UserPlatformQuotaRepository
 	liveAttestation       liveattestation.Provider
 	liveAttestationCipher SecretEncryptor
