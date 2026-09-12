@@ -301,28 +301,18 @@ func TestComputeGlobalBatchTimeout(t *testing.T) {
 	}
 }
 
-// stubGlobalResultCreateRepo 记录结果写入次数，供派发行为断言使用。
+// stubGlobalResultCreateRepo 空实现结果仓储写入，供派发行为测试使用；
+// 各测试自行用局部计数器断言，桩本身保持无状态。
 type stubGlobalResultCreateRepo struct {
 	ScheduledTestResultRepository
-	mu      sync.Mutex
-	created int
 }
 
 func (s *stubGlobalResultCreateRepo) Create(ctx context.Context, result *ScheduledTestResult) (*ScheduledTestResult, error) {
-	s.mu.Lock()
-	s.created++
-	s.mu.Unlock()
 	return result, nil
 }
 
 func (s *stubGlobalResultCreateRepo) PruneOldResults(ctx context.Context, planID int64, keepCount int) error {
 	return nil
-}
-
-func (s *stubGlobalResultCreateRepo) createdCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.created
 }
 
 // fixedAccountSource 固定返回指定候选账号，供派发行为测试使用。
