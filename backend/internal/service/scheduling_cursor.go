@@ -117,13 +117,14 @@ func roundRobinManager(
 	return field.Load()
 }
 
-// GatewayService 侧封装：判断当前是否启用严格轮询策略。
-// settingService 不可用时始终视为默认策略（安全侧：保持既有行为）。
-func (s *GatewayService) accountSchedulingRoundRobinEnabled(ctx context.Context) bool {
+// GatewayService 侧封装：解析平台最终生效策略是否为严格轮询。
+// 平台级覆盖（default/round_robin）优先于系统级；settingService 不可用时
+// 始终视为默认策略（安全侧：保持既有行为）。
+func (s *GatewayService) accountSchedulingRoundRobinEnabled(ctx context.Context, platform string) bool {
 	if s == nil || s.settingService == nil {
 		return false
 	}
-	return s.settingService.GetAccountSchedulingStrategy(ctx) == AccountSchedulingStrategyRoundRobin
+	return s.settingService.GetAccountSchedulingStrategyForPlatform(ctx, platform) == AccountSchedulingStrategyRoundRobin
 }
 
 // nextRoundRobinCursor 取一次轮询游标原始值。
@@ -133,13 +134,13 @@ func (s *GatewayService) nextRoundRobinCursor(ctx context.Context, groupID *int6
 	return roundRobinManager(&s.roundRobinCursors, s.cache).next(ctx, roundRobinScope(groupID, platform))
 }
 
-// OpenAIGatewayService 侧封装（语义与 GatewayService 侧一致）。
+// OpenAIGatewayService 侧封装（语义与 GatewayService 侧一致，平台级优先）。
 
-func (s *OpenAIGatewayService) accountSchedulingRoundRobinEnabled(ctx context.Context) bool {
+func (s *OpenAIGatewayService) accountSchedulingRoundRobinEnabled(ctx context.Context, platform string) bool {
 	if s == nil || s.settingService == nil {
 		return false
 	}
-	return s.settingService.GetAccountSchedulingStrategy(ctx) == AccountSchedulingStrategyRoundRobin
+	return s.settingService.GetAccountSchedulingStrategyForPlatform(ctx, platform) == AccountSchedulingStrategyRoundRobin
 }
 
 func (s *OpenAIGatewayService) nextRoundRobinCursor(ctx context.Context, groupID *int64, platform string) int64 {
@@ -153,14 +154,14 @@ func (s *OpenAIGatewayService) nextRoundRobinStart(ctx context.Context, groupID 
 	return rotateStartIndex(s.nextRoundRobinCursor(ctx, groupID, platform), candidateCount)
 }
 
-// GeminiMessagesCompatService 侧封装（语义与 GatewayService 侧一致；
+// GeminiMessagesCompatService 侧封装（语义与 GatewayService 侧一致，平台级优先；
 // 该服务无直接 SettingService 引用，经 rateLimitService.settingService 访问）。
 
-func (s *GeminiMessagesCompatService) accountSchedulingRoundRobinEnabled(ctx context.Context) bool {
+func (s *GeminiMessagesCompatService) accountSchedulingRoundRobinEnabled(ctx context.Context, platform string) bool {
 	if s == nil || s.rateLimitService == nil || s.rateLimitService.settingService == nil {
 		return false
 	}
-	return s.rateLimitService.settingService.GetAccountSchedulingStrategy(ctx) == AccountSchedulingStrategyRoundRobin
+	return s.rateLimitService.settingService.GetAccountSchedulingStrategyForPlatform(ctx, platform) == AccountSchedulingStrategyRoundRobin
 }
 
 func (s *GeminiMessagesCompatService) nextRoundRobinCursor(ctx context.Context, groupID *int64, platform string) int64 {

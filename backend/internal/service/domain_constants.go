@@ -121,6 +121,31 @@ var AllowedSchedulingThresholdPlatforms = []string{
 	PlatformZhipu,
 }
 
+// AllowedSchedulingStrategyPlatforms 是允许配置平台级调度策略的平台列表：
+// 与各调度决策点传入的已归一化平台键严格对齐（Claude 通用链 / OpenAI 兼容链 /
+// Gemini 兼容链实际可能调度的全部平台，含 kimi/zhipu/deepseek 分组——它们经
+// NormalizeOpenAICompatiblePlatform 与 composite 展开后以原平台键参与调度）。
+var AllowedSchedulingStrategyPlatforms = []string{
+	PlatformAnthropic,
+	PlatformOpenAI,
+	PlatformGemini,
+	PlatformAntigravity,
+	PlatformGrok,
+	PlatformKimi,
+	PlatformZhipu,
+	PlatformDeepseek,
+}
+
+// IsAllowedSchedulingStrategyPlatform 报告 platform 是否为合法的平台级调度策略键。
+func IsAllowedSchedulingStrategyPlatform(platform string) bool {
+	for _, p := range AllowedSchedulingStrategyPlatforms {
+		if p == platform {
+			return true
+		}
+	}
+	return false
+}
+
 // IsAllowedQuotaPlatform 报告 s 是否为合法的 quota platform 标识。
 func IsAllowedQuotaPlatform(s string) bool {
 	for _, p := range AllowedQuotaPlatforms {
@@ -626,6 +651,13 @@ const (
 	SettingKeyAccountSchedulingStrategy = "account_scheduling_strategy"
 	AccountSchedulingStrategyDefault    = "default"
 	AccountSchedulingStrategyRoundRobin = "round_robin"
+
+	// SettingKeyAccountSchedulingStrategyByPlatform 平台级账号调度策略（JSON map，
+	// key=平台，value=default/round_robin/system）。平台值优先于系统级策略；
+	// system 与缺省均表示继承系统级（SettingKeyAccountSchedulingStrategy）。
+	SettingKeyAccountSchedulingStrategyByPlatform = "account_scheduling_strategy_by_platform"
+	// AccountSchedulingStrategySystem 平台级专用值：跟随系统级调度策略。
+	AccountSchedulingStrategySystem = "system"
 
 	// Gateway Forwarding Behavior
 	// SettingKeyOpenAITTFTMode 控制 first_token_ms 的统计口径。

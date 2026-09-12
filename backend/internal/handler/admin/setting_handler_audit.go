@@ -455,6 +455,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.AccountSchedulingStrategy != after.AccountSchedulingStrategy {
 		changed = append(changed, "account_scheduling_strategy")
 	}
+	if !accountSchedulingStrategyByPlatformEqual(before.AccountSchedulingStrategyByPlatform, after.AccountSchedulingStrategyByPlatform) {
+		changed = append(changed, "account_scheduling_strategy_by_platform")
+	}
 	if before.OpenAITTFTMode != after.OpenAITTFTMode {
 		changed = append(changed, "openai_ttft_mode")
 	}
@@ -836,6 +839,25 @@ func equalAccountSchedulingThresholds(before, after map[string]int) bool {
 			if value, ok := after[platform]; ok {
 				afterValue = value
 			}
+		}
+		if beforeValue != afterValue {
+			return false
+		}
+	}
+	return true
+}
+
+// accountSchedulingStrategyByPlatformEqual 比较平台级调度策略 map：
+// nil 与空 map 语义相同（全部继承系统级），缺省键视为 system。
+func accountSchedulingStrategyByPlatformEqual(before, after map[string]string) bool {
+	for _, platform := range service.AllowedSchedulingStrategyPlatforms {
+		beforeValue := service.AccountSchedulingStrategySystem
+		if value, ok := before[platform]; ok {
+			beforeValue = value
+		}
+		afterValue := service.AccountSchedulingStrategySystem
+		if value, ok := after[platform]; ok {
+			afterValue = value
 		}
 		if beforeValue != afterValue {
 			return false

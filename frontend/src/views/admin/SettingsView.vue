@@ -4962,6 +4962,48 @@
                 </p>
               </div>
 
+              <!-- 平台级调度策略：优先于系统级 -->
+              <div>
+                <label
+                  class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                >
+                  {{ t("admin.settings.scheduling.platformSchedulingStrategyTitle") }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t("admin.settings.scheduling.platformSchedulingStrategyHint") }}
+                </p>
+                <div class="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  <div
+                    v-for="platform in schedulingStrategyPlatforms"
+                    :key="platform"
+                    class="rounded-lg border border-gray-200 p-4 dark:border-dark-700"
+                  >
+                    <label
+                      class="font-mono text-sm font-medium text-gray-900 dark:text-white"
+                      :for="`account-scheduling-strategy-${platform}`"
+                    >
+                      {{ platform }}
+                    </label>
+                    <select
+                      :id="`account-scheduling-strategy-${platform}`"
+                      v-model="form.account_scheduling_strategy_by_platform[platform]"
+                      class="input mt-3"
+                      :data-testid="`account-scheduling-strategy-${platform}`"
+                    >
+                      <option value="system">
+                        {{ t("admin.settings.scheduling.accountSchedulingStrategySystem") }}
+                      </option>
+                      <option value="default">
+                        {{ t("admin.settings.scheduling.accountSchedulingStrategyDefault") }}
+                      </option>
+                      <option value="round_robin">
+                        {{ t("admin.settings.scheduling.accountSchedulingStrategyRoundRobin") }}
+                      </option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
               <div class="border-t border-gray-100 pt-4 dark:border-dark-700">
                 <div class="mb-3">
                   <label class="font-medium text-gray-900 dark:text-white">
@@ -8798,8 +8840,11 @@ import { adminAPI } from "@/api";
 import {
   appendAuthSourceDefaultsToUpdateRequest,
   buildAuthSourceDefaultsState,
+  type AccountSchedulingStrategyByPlatformMap,
+  normalizeAccountSchedulingStrategyByPlatformMap,
   normalizeAccountSchedulingThresholdsMap,
   normalizePlatformQuotasMap,
+  SCHEDULING_STRATEGY_PLATFORMS,
   sanitizeAccountSchedulingThresholdsMap,
   sanitizePlatformQuotasMap,
   SCHEDULING_THRESHOLD_PLATFORMS,
@@ -9551,9 +9596,14 @@ type SettingsForm = Omit<
   // 系统全局平台限额 map；form 内始终归一化为全 4 平台对象（模板非空绑定依赖此不变量）
   default_platform_quotas: DefaultPlatformQuotasMap;
   account_scheduling_thresholds: ReturnType<typeof normalizeAccountSchedulingThresholdsMap>;
+  // 平台级调度策略 map；form 内始终归一化为全 5 平台对象（模板非空绑定依赖此不变量）
+  account_scheduling_strategy_by_platform: AccountSchedulingStrategyByPlatformMap;
 };
 
 const schedulingThresholdPlatforms = SCHEDULING_THRESHOLD_PLATFORMS;
+
+// 平台级调度策略的可配置平台（与后端 AllowedSchedulingStrategyPlatforms 八平台对齐）
+const schedulingStrategyPlatforms = SCHEDULING_STRATEGY_PLATFORMS;
 
 const form = reactive<SettingsForm>({
   registration_enabled: true,
@@ -9792,6 +9842,8 @@ const form = reactive<SettingsForm>({
   openai_advanced_scheduler_weight_session_sticky: "",
   // Gateway forwarding behavior
   account_scheduling_strategy: "default",
+  // 平台级调度策略覆盖：默认全部平台跟随系统级
+  account_scheduling_strategy_by_platform: normalizeAccountSchedulingStrategyByPlatformMap(),
   openai_ttft_mode: "semantic",
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
@@ -10830,6 +10882,10 @@ async function loadSettings() {
       settings.account_scheduling_strategy === "round_robin"
         ? "round_robin"
         : "default";
+    form.account_scheduling_strategy_by_platform =
+      normalizeAccountSchedulingStrategyByPlatformMap(
+        settings.account_scheduling_strategy_by_platform,
+      );
     form.channel_monitor_mode =
       settings.channel_monitor_mode === "v2" ? "v2" : "v1";
     form.channel_monitor_hide_throughput = Boolean(
@@ -11374,6 +11430,9 @@ async function saveSettings() {
         form.account_scheduling_strategy === "round_robin"
           ? "round_robin"
           : "default",
+      // 平台级调度策略覆盖：后端稀疏存储（system 值剔除），发送归一化后的全量 map 亦可
+      account_scheduling_strategy_by_platform:
+        form.account_scheduling_strategy_by_platform,
       openai_ttft_mode:
         form.openai_ttft_mode === "visible" ? "visible" : "semantic",
       enable_fingerprint_unification: form.enable_fingerprint_unification,
@@ -11560,6 +11619,12 @@ async function saveSettings() {
     form.account_scheduling_thresholds = normalizeAccountSchedulingThresholdsMap(
       updated.account_scheduling_thresholds,
     );
+    // 后端返回剔除 system 后的稀疏 map；form 侧必须归一回全 5 平台对象，
+    // 否则未覆盖平台的 v-model 值变 undefined、下拉显示空白
+    form.account_scheduling_strategy_by_platform =
+      normalizeAccountSchedulingStrategyByPlatformMap(
+        updated.account_scheduling_strategy_by_platform,
+      );
     registrationEmailSuffixWhitelistTags.value =
       normalizeRegistrationEmailSuffixDomains(
         updated.registration_email_suffix_whitelist,

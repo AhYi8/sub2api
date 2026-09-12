@@ -53,18 +53,19 @@ const backendModeDBTimeout = 5 * time.Second
 
 // cachedGatewayForwardingSettings 缓存网关转发行为设置（进程内缓存，60s TTL）
 type cachedGatewayForwardingSettings struct {
-	accountSchedulingStrategy        string
-	openAITTFTMode                   string
-	fingerprintUnification           bool
-	metadataPassthrough              bool
-	cchSigning                       bool
-	claudeOAuthSystemPromptInjection bool
-	claudeOAuthSystemPrompt          string
-	claudeOAuthSystemPromptBlocks    string
-	anthropicCacheTTL1hInjection     bool
-	rewriteMessageCacheControl       bool
-	clientDatelineNormalization      bool
-	expiresAt                        int64 // unix nano
+	accountSchedulingStrategy           string
+	accountSchedulingStrategyByPlatform map[string]string
+	openAITTFTMode                      string
+	fingerprintUnification              bool
+	metadataPassthrough                 bool
+	cchSigning                          bool
+	claudeOAuthSystemPromptInjection    bool
+	claudeOAuthSystemPrompt             string
+	claudeOAuthSystemPromptBlocks       string
+	anthropicCacheTTL1hInjection        bool
+	rewriteMessageCacheControl          bool
+	clientDatelineNormalization         bool
+	expiresAt                           int64 // unix nano
 }
 
 var gatewayForwardingCache atomic.Value // *cachedGatewayForwardingSettings
@@ -741,6 +742,7 @@ func (s *SettingService) IsBackendModeEnabled(ctx context.Context) bool {
 
 type gatewayForwardingSettingsResult struct {
 	accountSchedulingStrategy                                                             string
+	accountSchedulingStrategyByPlatform                                                   map[string]string
 	openAITTFTMode                                                                        string
 	fp, mp, cch, claudeOAuthSystemPromptInjection, cacheTTL1h, rewriteMessageCacheControl bool
 	clientDatelineNormalization                                                           bool
@@ -751,17 +753,18 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 	if cached, ok := gatewayForwardingCache.Load().(*cachedGatewayForwardingSettings); ok && cached != nil {
 		if time.Now().UnixNano() < cached.expiresAt {
 			return gatewayForwardingSettingsResult{
-				accountSchedulingStrategy:        cached.accountSchedulingStrategy,
-				openAITTFTMode:                   cached.openAITTFTMode,
-				fp:                               cached.fingerprintUnification,
-				mp:                               cached.metadataPassthrough,
-				cch:                              cached.cchSigning,
-				claudeOAuthSystemPromptInjection: cached.claudeOAuthSystemPromptInjection,
-				claudeOAuthSystemPrompt:          cached.claudeOAuthSystemPrompt,
-				claudeOAuthSystemPromptBlocks:    cached.claudeOAuthSystemPromptBlocks,
-				cacheTTL1h:                       cached.anthropicCacheTTL1hInjection,
-				rewriteMessageCacheControl:       cached.rewriteMessageCacheControl,
-				clientDatelineNormalization:      cached.clientDatelineNormalization,
+				accountSchedulingStrategy:           cached.accountSchedulingStrategy,
+				accountSchedulingStrategyByPlatform: cachedAccountSchedulingStrategyByPlatform(cached),
+				openAITTFTMode:                      cached.openAITTFTMode,
+				fp:                                  cached.fingerprintUnification,
+				mp:                                  cached.metadataPassthrough,
+				cch:                                 cached.cchSigning,
+				claudeOAuthSystemPromptInjection:    cached.claudeOAuthSystemPromptInjection,
+				claudeOAuthSystemPrompt:             cached.claudeOAuthSystemPrompt,
+				claudeOAuthSystemPromptBlocks:       cached.claudeOAuthSystemPromptBlocks,
+				cacheTTL1h:                          cached.anthropicCacheTTL1hInjection,
+				rewriteMessageCacheControl:          cached.rewriteMessageCacheControl,
+				clientDatelineNormalization:         cached.clientDatelineNormalization,
 			}
 		}
 	}
@@ -769,17 +772,18 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		if cached, ok := gatewayForwardingCache.Load().(*cachedGatewayForwardingSettings); ok && cached != nil {
 			if time.Now().UnixNano() < cached.expiresAt {
 				return gatewayForwardingSettingsResult{
-					accountSchedulingStrategy:        cached.accountSchedulingStrategy,
-					openAITTFTMode:                   cached.openAITTFTMode,
-					fp:                               cached.fingerprintUnification,
-					mp:                               cached.metadataPassthrough,
-					cch:                              cached.cchSigning,
-					claudeOAuthSystemPromptInjection: cached.claudeOAuthSystemPromptInjection,
-					claudeOAuthSystemPrompt:          cached.claudeOAuthSystemPrompt,
-					claudeOAuthSystemPromptBlocks:    cached.claudeOAuthSystemPromptBlocks,
-					cacheTTL1h:                       cached.anthropicCacheTTL1hInjection,
-					rewriteMessageCacheControl:       cached.rewriteMessageCacheControl,
-					clientDatelineNormalization:      cached.clientDatelineNormalization,
+					accountSchedulingStrategy:           cached.accountSchedulingStrategy,
+					accountSchedulingStrategyByPlatform: cachedAccountSchedulingStrategyByPlatform(cached),
+					openAITTFTMode:                      cached.openAITTFTMode,
+					fp:                                  cached.fingerprintUnification,
+					mp:                                  cached.metadataPassthrough,
+					cch:                                 cached.cchSigning,
+					claudeOAuthSystemPromptInjection:    cached.claudeOAuthSystemPromptInjection,
+					claudeOAuthSystemPrompt:             cached.claudeOAuthSystemPrompt,
+					claudeOAuthSystemPromptBlocks:       cached.claudeOAuthSystemPromptBlocks,
+					cacheTTL1h:                          cached.anthropicCacheTTL1hInjection,
+					rewriteMessageCacheControl:          cached.rewriteMessageCacheControl,
+					clientDatelineNormalization:         cached.clientDatelineNormalization,
 				}, nil
 			}
 		}
@@ -787,6 +791,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		defer cancel()
 		values, err := s.settingRepo.GetMultiple(dbCtx, []string{
 			SettingKeyAccountSchedulingStrategy,
+			SettingKeyAccountSchedulingStrategyByPlatform,
 			SettingKeyOpenAITTFTMode,
 			SettingKeyEnableFingerprintUnification,
 			SettingKeyEnableMetadataPassthrough,
@@ -815,6 +820,12 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			return gatewayForwardingSettingsResult{accountSchedulingStrategy: AccountSchedulingStrategyDefault, openAITTFTMode: OpenAITTFTModeSemantic, fp: true, claudeOAuthSystemPromptInjection: true, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), clientDatelineNormalization: true}, nil
 		}
 		schedulingStrategy := normalizeAccountSchedulingStrategy(values[SettingKeyAccountSchedulingStrategy])
+		// 平台级覆盖：解析失败按空 map 处理（全部继承系统级），错误降级不放大
+		schedulingStrategyByPlatform, platformErr := parseAccountSchedulingStrategyByPlatformSetting(values[SettingKeyAccountSchedulingStrategyByPlatform])
+		if platformErr != nil {
+			slog.Warn("failed to parse account_scheduling_strategy_by_platform", "error", platformErr)
+			schedulingStrategyByPlatform = map[string]string{}
+		}
 		ttftMode := normalizeOpenAITTFTMode(values[SettingKeyOpenAITTFTMode])
 		fp := true
 		if v, ok := values[SettingKeyEnableFingerprintUnification]; ok && v != "" {
@@ -838,31 +849,33 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			clientDatelineNormalization = v == "true"
 		}
 		gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
-			accountSchedulingStrategy:        schedulingStrategy,
-			openAITTFTMode:                   ttftMode,
-			fingerprintUnification:           fp,
-			metadataPassthrough:              mp,
-			cchSigning:                       cch,
-			claudeOAuthSystemPromptInjection: systemPromptInjection,
-			claudeOAuthSystemPrompt:          systemPrompt,
-			claudeOAuthSystemPromptBlocks:    systemPromptBlocks,
-			anthropicCacheTTL1hInjection:     cacheTTL1h,
-			rewriteMessageCacheControl:       rewriteMessageCacheControl,
-			clientDatelineNormalization:      clientDatelineNormalization,
-			expiresAt:                        time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
+			accountSchedulingStrategy:           schedulingStrategy,
+			accountSchedulingStrategyByPlatform: schedulingStrategyByPlatform,
+			openAITTFTMode:                      ttftMode,
+			fingerprintUnification:              fp,
+			metadataPassthrough:                 mp,
+			cchSigning:                          cch,
+			claudeOAuthSystemPromptInjection:    systemPromptInjection,
+			claudeOAuthSystemPrompt:             systemPrompt,
+			claudeOAuthSystemPromptBlocks:       systemPromptBlocks,
+			anthropicCacheTTL1hInjection:        cacheTTL1h,
+			rewriteMessageCacheControl:          rewriteMessageCacheControl,
+			clientDatelineNormalization:         clientDatelineNormalization,
+			expiresAt:                           time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
 		})
 		return gatewayForwardingSettingsResult{
-			accountSchedulingStrategy:        schedulingStrategy,
-			openAITTFTMode:                   ttftMode,
-			fp:                               fp,
-			mp:                               mp,
-			cch:                              cch,
-			claudeOAuthSystemPromptInjection: systemPromptInjection,
-			claudeOAuthSystemPrompt:          systemPrompt,
-			claudeOAuthSystemPromptBlocks:    systemPromptBlocks,
-			cacheTTL1h:                       cacheTTL1h,
-			rewriteMessageCacheControl:       rewriteMessageCacheControl,
-			clientDatelineNormalization:      clientDatelineNormalization,
+			accountSchedulingStrategy:           schedulingStrategy,
+			accountSchedulingStrategyByPlatform: schedulingStrategyByPlatform,
+			openAITTFTMode:                      ttftMode,
+			fp:                                  fp,
+			mp:                                  mp,
+			cch:                                 cch,
+			claudeOAuthSystemPromptInjection:    systemPromptInjection,
+			claudeOAuthSystemPrompt:             systemPrompt,
+			claudeOAuthSystemPromptBlocks:       systemPromptBlocks,
+			cacheTTL1h:                          cacheTTL1h,
+			rewriteMessageCacheControl:          rewriteMessageCacheControl,
+			clientDatelineNormalization:         clientDatelineNormalization,
 		}, nil
 	})
 	if r, ok := val.(gatewayForwardingSettingsResult); ok {
@@ -871,9 +884,29 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 	return gatewayForwardingSettingsResult{accountSchedulingStrategy: AccountSchedulingStrategyDefault, fp: true, claudeOAuthSystemPromptInjection: true, clientDatelineNormalization: true}
 }
 
-// GetAccountSchedulingStrategy 返回全局账号调度策略（default / round_robin）。
-func (s *SettingService) GetAccountSchedulingStrategy(ctx context.Context) string {
-	return s.getGatewayForwardingSettingsCached(ctx).accountSchedulingStrategy
+// cachedAccountSchedulingStrategyByPlatform 安全读取缓存中的平台级策略 map：
+// 测试会手动 Store 不带该字段的空实例（强制过期重读），nil 时返回空 map
+// （语义 = 全部继承系统级）。返回的是缓存内部 map 的共享引用——发布后只读，
+// 任何调用方不得对其写入。
+func cachedAccountSchedulingStrategyByPlatform(cached *cachedGatewayForwardingSettings) map[string]string {
+	if cached == nil || cached.accountSchedulingStrategyByPlatform == nil {
+		return map[string]string{}
+	}
+	return cached.accountSchedulingStrategyByPlatform
+}
+
+// GetAccountSchedulingStrategyForPlatform 解析平台最终生效的调度策略：
+// 平台级覆盖（default / round_robin）优先；system 或未配置一律继承系统级策略。
+// 这是平台级 → 系统级两级解析的唯一收口点。
+func (s *SettingService) GetAccountSchedulingStrategyForPlatform(ctx context.Context, platform string) string {
+	settings := s.getGatewayForwardingSettingsCached(ctx)
+	if override, ok := settings.accountSchedulingStrategyByPlatform[platform]; ok {
+		switch override {
+		case AccountSchedulingStrategyDefault, AccountSchedulingStrategyRoundRobin:
+			return override
+		}
+	}
+	return settings.accountSchedulingStrategy
 }
 
 // GetOpenAITTFTMode 返回 Responses first_token_ms 的统计口径。

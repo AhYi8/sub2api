@@ -482,6 +482,74 @@ func TestSettingService_ParseSettings_AccountSchedulingStrategyFallback(t *testi
 	require.Equal(t, AccountSchedulingStrategyDefault, svc.parseSettings(map[string]string{SettingKeyAccountSchedulingStrategy: "garbage"}).AccountSchedulingStrategy)
 }
 
+// TestSettingService_UpdateSettings_AccountSchedulingStrategyByPlatform 校验平台级
+// 调度策略覆盖：合法值稀疏入库（system 条目剔除）、未知平台/非法值 400 拒绝、
+// nil map（未提交该字段）保持既有存储不动。
+func TestSettingService_UpdateSettings_AccountSchedulingStrategyByPlatform(t *testing.T) {
+	ctx := context.Background()
+	// 用例结束后失效包级缓存：UpdateSettings 会向其写入 60s TTL 的快照，
+	// 避免污染同包后续未主动 Store 过期实例的测试。
+	defer gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{expiresAt: 0})
+
+	t.Run("valid overrides stored sparsely", func(t *testing.T) {
+		repo := &settingUpdateRepoStub{}
+		svc := NewSettingService(repo, &config.Config{})
+		err := svc.UpdateSettings(ctx, &SystemSettings{
+			AccountSchedulingStrategyByPlatform: map[string]string{
+				PlatformOpenAI:    AccountSchedulingStrategyRoundRobin,
+				PlatformAnthropic: AccountSchedulingStrategySystem, // system 剔除不入库
+				PlatformGrok:      AccountSchedulingStrategyDefault,
+			},
+		})
+		require.NoError(t, err)
+		require.JSONEq(t, `{"openai":"round_robin","grok":"default"}`, repo.updates[SettingKeyAccountSchedulingStrategyByPlatform])
+	})
+
+	t.Run("rejects unknown platform", func(t *testing.T) {
+		svc := NewSettingService(&settingUpdateRepoStub{}, &config.Config{})
+		err := svc.UpdateSettings(ctx, &SystemSettings{
+			AccountSchedulingStrategyByPlatform: map[string]string{"mystery": AccountSchedulingStrategyRoundRobin},
+		})
+		require.Error(t, err)
+	})
+
+	t.Run("rejects invalid strategy value", func(t *testing.T) {
+		svc := NewSettingService(&settingUpdateRepoStub{}, &config.Config{})
+		err := svc.UpdateSettings(ctx, &SystemSettings{
+			AccountSchedulingStrategyByPlatform: map[string]string{PlatformOpenAI: "least_connections"},
+		})
+		require.Error(t, err)
+	})
+
+	t.Run("nil map keeps existing storage", func(t *testing.T) {
+		repo := &settingUpdateRepoStub{}
+		svc := NewSettingService(repo, &config.Config{})
+		err := svc.UpdateSettings(ctx, &SystemSettings{})
+		require.NoError(t, err)
+		_, written := repo.updates[SettingKeyAccountSchedulingStrategyByPlatform]
+		require.False(t, written)
+	})
+}
+
+// TestSettingService_ParseSettings_AccountSchedulingStrategyByPlatform 验证解析容错：
+// 未知平台键丢弃、非法值剔除、坏 JSON 回退空 map（全部继承系统级）。
+func TestSettingService_ParseSettings_AccountSchedulingStrategyByPlatform(t *testing.T) {
+	svc := NewSettingService(&settingUpdateRepoStub{}, &config.Config{})
+
+	parsed := svc.parseSettings(map[string]string{
+		SettingKeyAccountSchedulingStrategyByPlatform: `{"openai":"round_robin","mystery":"default","gemini":"bogus"}`,
+	})
+	require.Equal(t, map[string]string{PlatformOpenAI: AccountSchedulingStrategyRoundRobin}, parsed.AccountSchedulingStrategyByPlatform)
+
+	broken := svc.parseSettings(map[string]string{
+		SettingKeyAccountSchedulingStrategyByPlatform: `{"openai":`,
+	})
+	require.Empty(t, broken.AccountSchedulingStrategyByPlatform)
+
+	missing := svc.parseSettings(map[string]string{})
+	require.Empty(t, missing.AccountSchedulingStrategyByPlatform)
+}
+
 func TestSettingService_UpdateSettings_OpenAIAdvancedSchedulerWeightSums(t *testing.T) {
 	maxFloat := strconv.FormatFloat(math.MaxFloat64, 'g', -1, 64)
 	tests := []struct {

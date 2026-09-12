@@ -106,3 +106,56 @@ func TestRoundRobinCursorManagerRedisValueWins(t *testing.T) {
 		t.Fatalf("Redis 成功时不应推进进程内降级游标")
 	}
 }
+
+// TestSettingService_GetAccountSchedulingStrategyForPlatform 验证两级策略解析：
+// 平台级覆盖（default/round_robin）优先；system 与缺省一律继承系统级；
+// 未知平台键与非法值在解析层已被剔除，不会进入运行时。
+func TestSettingService_GetAccountSchedulingStrategyForPlatform(t *testing.T) {
+	ctx := context.Background()
+	gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{expiresAt: 0})
+	svc := NewSettingService(&openAIAdvancedSchedulerSettingRepoStub{values: map[string]string{
+		SettingKeyAccountSchedulingStrategy:           AccountSchedulingStrategyRoundRobin,
+		SettingKeyAccountSchedulingStrategyByPlatform: `{"openai":"default","grok":"round_robin","anthropic":"system","mystery":"round_robin"}`,
+	}}, nil)
+
+	if got := svc.GetAccountSchedulingStrategyForPlatform(ctx, PlatformOpenAI); got != AccountSchedulingStrategyDefault {
+		t.Fatalf("openai 平台覆盖 default 生效，got %q", got)
+	}
+	if got := svc.GetAccountSchedulingStrategyForPlatform(ctx, PlatformGrok); got != AccountSchedulingStrategyRoundRobin {
+		t.Fatalf("grok 平台覆盖 round_robin 生效，got %q", got)
+	}
+	if got := svc.GetAccountSchedulingStrategyForPlatform(ctx, PlatformAnthropic); got != AccountSchedulingStrategyRoundRobin {
+		t.Fatalf("anthropic 显式 system 应继承系统级 round_robin，got %q", got)
+	}
+	if got := svc.GetAccountSchedulingStrategyForPlatform(ctx, PlatformGemini); got != AccountSchedulingStrategyRoundRobin {
+		t.Fatalf("gemini 未配置应继承系统级 round_robin，got %q", got)
+	}
+	// kimi/zhipu/deepseek 走 OpenAI 兼容链调度，同样在白名单内可覆盖/继承
+	if got := svc.GetAccountSchedulingStrategyForPlatform(ctx, PlatformKimi); got != AccountSchedulingStrategyRoundRobin {
+		t.Fatalf("kimi 未配置应继承系统级 round_robin，got %q", got)
+	}
+	// antigravity（/antigravity 强制平台路由）同样可继承
+	if got := svc.GetAccountSchedulingStrategyForPlatform(ctx, PlatformAntigravity); got != AccountSchedulingStrategyRoundRobin {
+		t.Fatalf("antigravity 未配置应继承系统级 round_robin，got %q", got)
+	}
+	// 未知平台键被剔除，同样走继承
+	if got := svc.GetAccountSchedulingStrategyForPlatform(ctx, "mystery"); got != AccountSchedulingStrategyRoundRobin {
+		t.Fatalf("未知平台键应被剔除并继承系统级，got %q", got)
+	}
+}
+
+// TestSettingService_GetAccountSchedulingStrategyForPlatform_InheritsDefaultSystem
+// 系统级为 default 时，任何平台级配置缺省/继承都解析为 default。
+func TestSettingService_GetAccountSchedulingStrategyForPlatform_InheritsDefaultSystem(t *testing.T) {
+	ctx := context.Background()
+	gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{expiresAt: 0})
+	svc := NewSettingService(&openAIAdvancedSchedulerSettingRepoStub{values: map[string]string{
+		SettingKeyAccountSchedulingStrategy: AccountSchedulingStrategyDefault,
+	}}, nil)
+
+	for _, platform := range []string{PlatformOpenAI, PlatformAnthropic, PlatformGemini} {
+		if got := svc.GetAccountSchedulingStrategyForPlatform(ctx, platform); got != AccountSchedulingStrategyDefault {
+			t.Fatalf("平台 %s 未配置应继承系统级 default，got %q", platform, got)
+		}
+	}
+}

@@ -116,9 +116,9 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 
 	cacheKey := "gemini:" + sessionHash
 
-	// 严格轮询策略：跳过粘性读写，每次调度重新轮询候选池；
-	// 既有绑定保留在缓存中，切回默认策略即恢复。
-	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx)
+	// 账号调度策略（平台级覆盖优先于系统级）：严格轮询模式下跳过粘性读写，
+	// 每次调度重新轮询候选池；既有绑定保留在缓存中，切回默认策略即恢复。
+	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx, platform)
 
 	// 2. 尝试粘性会话命中
 	// Try sticky session hit
@@ -185,7 +185,11 @@ func (s *GeminiMessagesCompatService) resolvePlatformAndSchedulingMode(ctx conte
 				return "", false, false, fmt.Errorf("get group failed: %w", err)
 			}
 		}
-		// gemini 分组支持混合调度（包含启用了 mixed_scheduling 的 antigravity 账户）
+		// gemini 分组支持混合调度（包含启用了 mixed_scheduling 的 antigravity 账户）。
+		// 注意：composite 分组在此原样返回 "composite"，不参与平台级调度策略白名单
+		//（策略读取会回落系统级）；当前该入口无生产调用者（handler 走 GatewayService
+		// 的负载感知链，其内部已正确展开 composite 为目标平台）。若未来接入生产，
+		// 需先对齐 Claude 链的 resolveCompositeRouteDecision 展开逻辑。
 		return group.Platform, group.Platform == PlatformGemini, false, nil
 	}
 
@@ -339,7 +343,7 @@ func (s *GeminiMessagesCompatService) selectBestGeminiAccount(
 	useMixedScheduling bool,
 ) *Account {
 	var selected *Account
-	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx)
+	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx, platform)
 	var roundRobinPool []*Account
 	precheckResult := s.buildPreCheckUsageResultMap(ctx, accounts, requestedModel)
 

@@ -847,6 +847,14 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	// Gateway forwarding behavior (defaults: fingerprint=true, metadata_passthrough=false,
 	// cch_signing=false, claude_oauth_system_prompt_injection=true)
 	result.AccountSchedulingStrategy = normalizeAccountSchedulingStrategy(settings[SettingKeyAccountSchedulingStrategy])
+	result.AccountSchedulingStrategyByPlatform = map[string]string{}
+	if raw := strings.TrimSpace(settings[SettingKeyAccountSchedulingStrategyByPlatform]); raw != "" {
+		if overrides, err := parseAccountSchedulingStrategyByPlatformSetting(raw); err != nil {
+			slog.Warn("[Setting] parseSettings: unmarshal account_scheduling_strategy_by_platform failed", "error", err)
+		} else {
+			result.AccountSchedulingStrategyByPlatform = overrides
+		}
+	}
 	result.OpenAITTFTMode = normalizeOpenAITTFTMode(settings[SettingKeyOpenAITTFTMode])
 	if v, ok := settings[SettingKeyEnableFingerprintUnification]; ok && v != "" {
 		result.EnableFingerprintUnification = v == "true"

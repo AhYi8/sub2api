@@ -887,7 +887,8 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 		return nil, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
 	}
 
-	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx)
+	// 账号调度策略（平台级覆盖优先于系统级）
+	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx, platform)
 
 	// 1. 尝试粘性会话命中（严格轮询模式下跳过读取，既有绑定保留在缓存中）
 	// Try sticky session hit
@@ -1058,7 +1059,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	}
 	// 严格轮询策略：跳过优先级/上游成本/LRU 排序（排序结果会被旋转完全覆盖，
 	// 提前分支避免白做），候选按 ID 升序 + 游标旋转后取起点。
-	if s.accountSchedulingRoundRobinEnabled(ctx) {
+	if s.accountSchedulingRoundRobinEnabled(ctx, platform) {
 		eligible = s.rotateOpenAIAccountsRoundRobin(ctx, groupID, platform, eligible, compactTiers, requireCompact)
 		return eligible[0], compactBlocked, filterStats
 	}
@@ -1134,8 +1135,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	cfg := s.schedulingConfig()
 	preferLowUpstreamRate := useUpstreamTokenCost && s.isOpenAILowUpstreamRatePriorityEnabled(ctx)
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
-	// 严格轮询策略：跳过粘性读取，每次调度重新轮询候选池（Layer 1 因 stickyAccountID=0 自然跳过）。
-	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx)
+	// 账号调度策略（平台级覆盖优先于系统级）：严格轮询下跳过粘性读取，
+	// 每次调度重新轮询候选池（Layer 1 因 stickyAccountID=0 自然跳过）。
+	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx, platform)
 	var stickyAccountID int64
 	if !roundRobin && sessionHash != "" && s.cache != nil {
 		if accountID, err := s.getStickySessionAccountID(ctx, groupID, sessionHash); err == nil {

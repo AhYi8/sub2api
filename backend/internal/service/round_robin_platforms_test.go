@@ -137,3 +137,59 @@ func TestGeminiMessagesCompatService_RoundRobin_RotatesAndKeepsBinding(t *testin
 	// 原绑定原样保留，切回默认策略后立即可恢复粘性
 	require.Equal(t, int64(38002), cache.sessionBindings["gemini:sess-rr"])
 }
+
+// TestGatewayService_RoundRobin_PlatformOverrideRestoresSticky 验证：
+// 系统级 round_robin + anthropic 平台级覆盖 default → Claude 链路恢复粘性语义
+// （平台级策略优先于系统级的反向验证）。
+func TestGatewayService_RoundRobin_PlatformOverrideRestoresSticky(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(30301)
+	requestedModel := "claude-sonnet-4-5"
+
+	repo := &mockAccountRepoForPlatform{
+		accounts: []Account{
+			{ID: 37001, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true},
+			{ID: 37002, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true},
+		},
+		accountsByID: map[int64]*Account{},
+	}
+	for i := range repo.accounts {
+		repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
+	}
+	cache := &mockGatewayCacheForPlatform{
+		sessionBindings: map[string]int64{"sess-anthropic": 37002},
+	}
+	groupRepo := &mockGroupRepoForGateway{
+		groups: map[int64]*Group{
+			groupID: {
+				ID:       groupID,
+				Name:     "anthropic-override-group",
+				Platform: PlatformAnthropic,
+				Status:   StatusActive,
+				Hydrated: true,
+			},
+		},
+	}
+	gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{expiresAt: 0})
+	settingSvc := NewSettingService(&openAIAdvancedSchedulerSettingRepoStub{values: map[string]string{
+		SettingKeyAccountSchedulingStrategy:           AccountSchedulingStrategyRoundRobin,
+		SettingKeyAccountSchedulingStrategyByPlatform: `{"anthropic":"default"}`,
+	}}, testConfig())
+	cfg := testConfig()
+	cfg.Gateway.Scheduling.LoadBatchEnabled = true
+
+	svc := &GatewayService{
+		accountRepo:        repo,
+		cache:              cache,
+		cfg:                cfg,
+		groupRepo:          groupRepo,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		settingService:     settingSvc,
+	}
+
+	result, err := svc.SelectAccountWithLoadAwareness(ctx, &groupID, "sess-anthropic", requestedModel, nil, "", 0)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	// 平台级 default 覆盖系统级轮询：粘性绑定重新生效
+	require.Equal(t, int64(37002), result.Account.ID)
+}

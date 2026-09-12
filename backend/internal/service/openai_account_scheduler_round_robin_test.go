@@ -199,6 +199,86 @@ func TestOpenAIGatewayService_RoundRobin_DefaultStrategyKeepsSticky(t *testing.T
 	require.False(t, decision.StickySessionHit)
 }
 
+// TestOpenAIGatewayService_RoundRobin_PlatformOverrideEnablesRotation 验证：
+// 系统级 default + openai 平台级覆盖 round_robin → 仅 OpenAI 平台轮询生效。
+func TestOpenAIGatewayService_RoundRobin_PlatformOverrideEnablesRotation(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	groupID := int64(20107)
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = true
+	svc, _ := newRoundRobinTestOpenAIService(t, cfg, roundRobinTestAccounts(groupID, 36001, 36002, 36003), map[string]string{
+		SettingKeyAccountSchedulingStrategy:           AccountSchedulingStrategyDefault,
+		SettingKeyAccountSchedulingStrategyByPlatform: `{"openai":"round_robin"}`,
+	})
+	ctx := context.Background()
+
+	got := make([]int64, 0, 3)
+	for i := 0; i < 3; i++ {
+		selection, _, err := svc.SelectAccountWithScheduler(
+			ctx, &groupID, "", "", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		got = append(got, selection.Account.ID)
+	}
+	require.Equal(t, []int64{36001, 36002, 36003}, got)
+}
+
+// TestOpenAIGatewayService_RoundRobin_PlatformOverrideRestoresSticky 验证：
+// 系统级 round_robin + openai 平台级覆盖 default → OpenAI 平台恢复粘性语义。
+func TestOpenAIGatewayService_RoundRobin_PlatformOverrideRestoresSticky(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	groupID := int64(20108)
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = true
+	svc, _ := newRoundRobinTestOpenAIService(t, cfg, roundRobinTestAccounts(groupID, 36001, 36002), map[string]string{
+		SettingKeyAccountSchedulingStrategy:           AccountSchedulingStrategyRoundRobin,
+		SettingKeyAccountSchedulingStrategyByPlatform: `{"openai":"default"}`,
+	})
+	ctx := context.Background()
+	require.NoError(t, svc.setStickySessionAccountID(ctx, &groupID, "sess-override", 36002, time.Hour))
+
+	selection, _, err := svc.SelectAccountWithScheduler(
+		ctx, &groupID, "", "sess-override", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	// 平台级 default 覆盖系统级轮询：粘性绑定重新生效
+	require.Equal(t, int64(36002), selection.Account.ID)
+}
+
+// TestOpenAIGatewayService_RoundRobin_PlatformOverrideKeepsPreviousResponseSticky 验证：
+// 平台级覆盖开启轮询时，previous_response_id 硬粘层依旧保留（平台级策略只影响
+// 负载选择层，不破坏上游会话状态绑定）。
+func TestOpenAIGatewayService_RoundRobin_PlatformOverrideKeepsPreviousResponseSticky(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	groupID := int64(20109)
+	cfg := newSchedulerTestOpenAIWSV2Config()
+	svc, _ := newRoundRobinTestOpenAIService(t, cfg, roundRobinTestAccounts(groupID, 36001, 36002), map[string]string{
+		openAIAdvancedSchedulerSettingKey:             "true",
+		SettingKeyAccountSchedulingStrategy:           AccountSchedulingStrategyDefault,
+		SettingKeyAccountSchedulingStrategyByPlatform: `{"openai":"round_robin"}`,
+	})
+	ctx := context.Background()
+
+	store := svc.getOpenAIWSStateStore()
+	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_platform_rr", 36002, time.Hour))
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx, &groupID, "resp_platform_rr", "", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, openAIAccountScheduleLayerPreviousResponse, decision.Layer)
+	require.Equal(t, int64(36002), selection.Account.ID)
+}
+
 // TestOpenAIGatewayService_RoundRobin_GuardianParentStillSticky 验证：
 // 严格轮询不影响 guardian_parent 守护绑定层——Codex review 等子代理请求必须
 // 固定到父线程账号（上游会话状态绑定账号，轮询不得打破）。

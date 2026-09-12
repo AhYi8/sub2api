@@ -486,6 +486,7 @@ const baseSettingsResponse = {
   max_claude_code_version: "",
   allow_ungrouped_key_scheduling: false,
   account_scheduling_strategy: "default",
+  account_scheduling_strategy_by_platform: {},
   openai_ttft_mode: "semantic",
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
@@ -1434,6 +1435,44 @@ describe("admin SettingsView payment visible method controls", () => {
 
     const roundRobinPayload = updateSettings.mock.calls.at(-1)?.[0] as Record<string, unknown>;
     expect(roundRobinPayload.account_scheduling_strategy).toBe("round_robin");
+  });
+
+  it("loads and saves platform-level scheduling strategy overrides", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      account_scheduling_strategy_by_platform: { openai: "round_robin" },
+    });
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openGatewayTab(wrapper);
+
+    const openaiSelect = wrapper.get('[data-testid="account-scheduling-strategy-openai"]');
+    expect((openaiSelect.element as HTMLSelectElement).value).toBe("round_robin");
+    // 未配置平台归一化为「系统默认」
+    const anthropicSelect = wrapper.get('[data-testid="account-scheduling-strategy-anthropic"]');
+    expect((anthropicSelect.element as HTMLSelectElement).value).toBe("system");
+
+    // 模拟真实后端行为：保存响应返回剔除 system 后的稀疏 map
+    updateSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      account_scheduling_strategy_by_platform: { anthropic: "default" },
+    });
+    await anthropicSelect.setValue("default");
+    await openaiSelect.setValue("system");
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    const payload = updateSettings.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    const byPlatform = payload.account_scheduling_strategy_by_platform as Record<string, string>;
+    expect(byPlatform.openai).toBe("system");
+    expect(byPlatform.anthropic).toBe("default");
+    expect(byPlatform.grok).toBe("system");
+
+    // 保存成功后：稀疏响应必须被归一回全 5 平台对象，未覆盖平台的下拉不得变空白
+    expect((anthropicSelect.element as HTMLSelectElement).value).toBe("default");
+    expect((openaiSelect.element as HTMLSelectElement).value).toBe("system");
+    expect((wrapper.get('[data-testid="account-scheduling-strategy-grok"]').element as HTMLSelectElement).value).toBe("system");
   });
 
   it("loads fail-safe-off Ollama Cloud usage refresh settings and saves an explicit opt-in", async () => {

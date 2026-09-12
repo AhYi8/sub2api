@@ -64,6 +64,57 @@ export function normalizeAccountSchedulingThresholdsMap(
   return result
 }
 
+/** 平台级账号调度策略值：system = 跟随系统级（缺省） */
+export type AccountSchedulingStrategyOverride = "system" | "default" | "round_robin"
+
+/**
+ * 平台级调度策略的可配置平台（与后端 AllowedSchedulingStrategyPlatforms 八平台
+ * 严格对齐：Claude 通用链 / OpenAI 兼容链实际可能调度的全部平台，含
+ * kimi/zhipu/deepseek——它们经归一化与 composite 展开后以原平台键参与调度）。
+ */
+export type SchedulingStrategyPlatformType =
+  | "anthropic"
+  | "openai"
+  | "gemini"
+  | "antigravity"
+  | "grok"
+  | "kimi"
+  | "zhipu"
+  | "deepseek"
+
+export const SCHEDULING_STRATEGY_PLATFORMS: SchedulingStrategyPlatformType[] = [
+  "anthropic",
+  "openai",
+  "gemini",
+  "antigravity",
+  "grok",
+  "kimi",
+  "zhipu",
+  "deepseek",
+]
+
+/** 平台级调度策略 map（form 内始终归一化为全 8 平台对象，模板非空绑定依赖此不变量） */
+export type AccountSchedulingStrategyByPlatformMap = Record<
+  SchedulingStrategyPlatformType,
+  AccountSchedulingStrategyOverride
+>
+
+/**
+ * 归一化平台级调度策略 map：为全部平台补全缺省值 "system"（继承系统级），
+ * 非法/未知值一律归一为 "system"，与后端解析容错口径一致。
+ */
+export function normalizeAccountSchedulingStrategyByPlatformMap(
+  input?: Partial<Record<string, string>> | null,
+): AccountSchedulingStrategyByPlatformMap {
+  const result = {} as AccountSchedulingStrategyByPlatformMap
+  for (const platform of SCHEDULING_STRATEGY_PLATFORMS) {
+    const value = input?.[platform]
+    result[platform] =
+      value === "round_robin" || value === "default" ? value : "system"
+  }
+  return result
+}
+
 export function sanitizeAccountSchedulingThresholdsMap(
   input?: Partial<Record<SchedulingThresholdPlatformType, number>> | null,
 ): AccountSchedulingThresholdsMap {
@@ -621,6 +672,8 @@ export interface SystemSettings {
 
   // Gateway forwarding behavior
   account_scheduling_strategy: string;
+  // 平台级调度策略覆盖（后端稀疏存储，未配置平台不在 map 中 = 继承系统级）
+  account_scheduling_strategy_by_platform: Record<string, string>;
   openai_ttft_mode: string;
   enable_fingerprint_unification: boolean;
   enable_metadata_passthrough: boolean;
@@ -938,6 +991,7 @@ export interface UpdateSettingsRequest {
   max_claude_code_version?: string;
   allow_ungrouped_key_scheduling?: boolean;
   account_scheduling_strategy?: "default" | "round_robin" | string;
+  account_scheduling_strategy_by_platform?: Record<string, string>;
   openai_ttft_mode?: string;
   enable_fingerprint_unification?: boolean;
   enable_metadata_passthrough?: boolean;

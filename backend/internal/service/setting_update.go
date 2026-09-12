@@ -468,6 +468,19 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 		return nil, fmt.Errorf("%s must be one of: %s/%s", SettingKeyAccountSchedulingStrategy, AccountSchedulingStrategyDefault, AccountSchedulingStrategyRoundRobin)
 	}
 	updates[SettingKeyAccountSchedulingStrategy] = strategy
+	// 平台级调度策略覆盖：key 白名单 + 值三枚举；system 条目剔除后稀疏入库
+	//（空 map "{}" 等价全部继承系统级）。nil 表示未提交该字段，保持既有存储。
+	if settings.AccountSchedulingStrategyByPlatform != nil {
+		normalized, err := validateAccountSchedulingStrategyByPlatform(settings.AccountSchedulingStrategyByPlatform)
+		if err != nil {
+			return nil, err
+		}
+		blob, err := json.Marshal(normalized)
+		if err != nil {
+			return nil, fmt.Errorf("marshal account scheduling strategy by platform: %w", err)
+		}
+		updates[SettingKeyAccountSchedulingStrategyByPlatform] = string(blob)
+	}
 	mode := normalizeOpenAITTFTMode(settings.OpenAITTFTMode)
 	if strings.TrimSpace(settings.OpenAITTFTMode) != "" && strings.ToLower(strings.TrimSpace(settings.OpenAITTFTMode)) != OpenAITTFTModeSemantic && strings.ToLower(strings.TrimSpace(settings.OpenAITTFTMode)) != OpenAITTFTModeVisible {
 		return nil, fmt.Errorf("%s must be one of: %s/%s", SettingKeyOpenAITTFTMode, OpenAITTFTModeSemantic, OpenAITTFTModeVisible)
@@ -561,6 +574,82 @@ func defaultAccountSchedulingThresholds() map[string]int {
 		PlatformOpenAI:    100,
 		PlatformAnthropic: 100,
 		PlatformGrok:      100,
+	}
+}
+
+// validateAccountSchedulingStrategyByPlatform 严格校验平台级调度策略覆盖：
+// 平台 key 必须在 AllowedSchedulingStrategyPlatforms 白名单内，值必须是
+// system/default/round_robin 三枚举之一（大小写容错归一）。system 条目剔除后
+// 返回稀疏 map——存储中仅保留显式覆盖项，语义与「未配置即继承」一致。
+func validateAccountSchedulingStrategyByPlatform(input map[string]string) (map[string]string, error) {
+	normalized := make(map[string]string, len(input))
+	for platform, value := range input {
+		if !IsAllowedSchedulingStrategyPlatform(platform) {
+			return nil, infraerrors.BadRequest("INVALID_ACCOUNT_SCHEDULING_STRATEGY_BY_PLATFORM", fmt.Sprintf("unknown platform %q", platform))
+		}
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case AccountSchedulingStrategyRoundRobin:
+			normalized[platform] = AccountSchedulingStrategyRoundRobin
+		case AccountSchedulingStrategyDefault:
+			normalized[platform] = AccountSchedulingStrategyDefault
+		case AccountSchedulingStrategySystem:
+			// system = 继承系统级，不入库
+		default:
+			return nil, infraerrors.BadRequest("INVALID_ACCOUNT_SCHEDULING_STRATEGY_BY_PLATFORM", fmt.Sprintf("invalid strategy %q for platform %q", value, platform))
+		}
+	}
+	return normalized, nil
+}
+
+// parseAccountSchedulingStrategyByPlatformSetting 容错解析平台级调度策略 JSON：
+// 未知平台 key 丢弃、非法值归一为 system 后同样剔除，读取侧永远拿到合法稀疏 map。
+func parseAccountSchedulingStrategyByPlatformSetting(raw string) (map[string]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return map[string]string{}, nil
+	}
+	parsed := map[string]string{}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return map[string]string{}, err
+	}
+	normalized := make(map[string]string, len(parsed))
+	for platform, value := range parsed {
+		if entry, ok := normalizeSchedulingStrategyEntry(platform, value); ok {
+			normalized[platform] = entry
+		}
+	}
+	return normalized, nil
+}
+
+// parseAccountSchedulingStrategyByPlatformFromSystemSettings 保存设置后刷新缓存用：
+// 从 SystemSettings 字段归一化出平台级稀疏 map（system 条目剔除、非法值剔除），
+// nil 输入返回空 map（全部继承系统级）。
+func parseAccountSchedulingStrategyByPlatformFromSystemSettings(input map[string]string) map[string]string {
+	normalized := make(map[string]string, len(input))
+	for platform, value := range input {
+		if entry, ok := normalizeSchedulingStrategyEntry(platform, value); ok {
+			normalized[platform] = entry
+		}
+	}
+	return normalized
+}
+
+// normalizeSchedulingStrategyEntry 归一化单条平台级策略条目（宽容口径，供读取侧
+// 两个归一化函数共用）：平台在白名单内且值为 default/round_robin（大小写容错）
+// 时返回归一后的覆盖值；其余（未知平台、system、非法值）返回 false 表示剔除——
+// 稀疏存储语义下 system 与「不合法」都不入 map（等价继承系统级）。
+// 写入入口的严格校验（需区分错误原因并 400）见 validateAccountSchedulingStrategyByPlatform。
+func normalizeSchedulingStrategyEntry(platform, value string) (string, bool) {
+	if !IsAllowedSchedulingStrategyPlatform(platform) {
+		return "", false
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case AccountSchedulingStrategyRoundRobin:
+		return AccountSchedulingStrategyRoundRobin, true
+	case AccountSchedulingStrategyDefault:
+		return AccountSchedulingStrategyDefault, true
+	default:
+		return "", false
 	}
 }
 
@@ -711,18 +800,19 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	})
 	gatewayForwardingSF.Forget("gateway_forwarding")
 	gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
-		accountSchedulingStrategy:        normalizeAccountSchedulingStrategy(settings.AccountSchedulingStrategy),
-		openAITTFTMode:                   normalizeOpenAITTFTMode(settings.OpenAITTFTMode),
-		fingerprintUnification:           settings.EnableFingerprintUnification,
-		metadataPassthrough:              settings.EnableMetadataPassthrough,
-		cchSigning:                       settings.EnableCCHSigning,
-		claudeOAuthSystemPromptInjection: settings.EnableClaudeOAuthSystemPromptInjection,
-		claudeOAuthSystemPrompt:          settings.ClaudeOAuthSystemPrompt,
-		claudeOAuthSystemPromptBlocks:    settings.ClaudeOAuthSystemPromptBlocks,
-		anthropicCacheTTL1hInjection:     settings.EnableAnthropicCacheTTL1hInjection,
-		rewriteMessageCacheControl:       settings.RewriteMessageCacheControl,
-		clientDatelineNormalization:      settings.EnableClientDatelineNormalization,
-		expiresAt:                        time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
+		accountSchedulingStrategy:           normalizeAccountSchedulingStrategy(settings.AccountSchedulingStrategy),
+		accountSchedulingStrategyByPlatform: parseAccountSchedulingStrategyByPlatformFromSystemSettings(settings.AccountSchedulingStrategyByPlatform),
+		openAITTFTMode:                      normalizeOpenAITTFTMode(settings.OpenAITTFTMode),
+		fingerprintUnification:              settings.EnableFingerprintUnification,
+		metadataPassthrough:                 settings.EnableMetadataPassthrough,
+		cchSigning:                          settings.EnableCCHSigning,
+		claudeOAuthSystemPromptInjection:    settings.EnableClaudeOAuthSystemPromptInjection,
+		claudeOAuthSystemPrompt:             settings.ClaudeOAuthSystemPrompt,
+		claudeOAuthSystemPromptBlocks:       settings.ClaudeOAuthSystemPromptBlocks,
+		anthropicCacheTTL1hInjection:        settings.EnableAnthropicCacheTTL1hInjection,
+		rewriteMessageCacheControl:          settings.RewriteMessageCacheControl,
+		clientDatelineNormalization:         settings.EnableClientDatelineNormalization,
+		expiresAt:                           time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
 	})
 	s.antigravityUAVersionSF.Forget("antigravity_user_agent_version")
 	antigravityUserAgentVersion := antigravity.NormalizeUserAgentVersion(settings.AntigravityUserAgentVersion)

@@ -111,9 +111,6 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	cfg := s.schedulingConfig()
 
-	// 全局账号调度策略：严格轮询模式下跳过粘性读写，候选按 ID 升序 + 游标旋转选择。
-	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx)
-
 	// 检查 Claude Code 客户端限制（可能会替换 groupID 为降级分组）
 	group, groupID, err := s.checkClaudeCodeRestriction(ctx, groupID)
 	if err != nil {
@@ -130,6 +127,17 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			"model", requestedModel)
 		return nil, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
 	}
+
+	// 平台解析前移至粘性读取之前：账号调度策略支持平台级覆盖，粘性跳过决策
+	// 本身依赖「平台最终生效策略」，必须先拿到 platform。
+	platform, hasForcePlatform, err := s.resolvePlatform(ctx, groupID, group, requestedModel)
+	if err != nil {
+		return nil, err
+	}
+
+	// 账号调度策略（平台级覆盖优先于系统级）：严格轮询模式下跳过粘性读写，
+	// 候选按 ID 升序 + 游标旋转选择。
+	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx, platform)
 
 	// 粘性账号解析：严格轮询模式下完全跳过（含 handler 预取值），
 	// 每次调度都重新轮询候选池；既有绑定保留在缓存中，切回默认策略即恢复。
@@ -218,10 +226,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		}
 	}
 
-	platform, hasForcePlatform, err := s.resolvePlatform(ctx, groupID, group, requestedModel)
-	if err != nil {
-		return nil, err
-	}
+	// platform 已在粘性读取之前解析（平台级调度策略需要平台键），此处仅取
+	// Gemini 的 OAuth 偏好标记。
 	preferOAuth := platform == PlatformGemini
 
 	// 严格轮询：同一次调度内 Layer 1（模型路由，若掉层）与 Layer 2 共用一次

@@ -2373,9 +2373,10 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 		return nil, decision, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
 	}
 
-	// 严格轮询策略：粘性账号（会话绑定与 previous_response 置前）完全不参与，
-	// 每次调度都重新轮询候选池；既有绑定保留在缓存中，切回默认策略即恢复。
-	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx)
+	// 账号调度策略（平台级覆盖优先于系统级）：严格轮询下粘性账号（会话绑定与
+	// previous_response 置前）完全不参与，每次调度都重新轮询候选池；
+	// 既有绑定保留在缓存中，切回默认策略即恢复。
+	roundRobin := s.accountSchedulingRoundRobinEnabled(ctx, platform)
 	var stickyAccountID int64
 	if !roundRobin && sessionHash != "" && s.cache != nil {
 		if accountID, err := s.getStickySessionAccountID(ctx, groupID, sessionHash); err == nil && accountID > 0 {
