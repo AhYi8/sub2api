@@ -90,8 +90,23 @@ const (
 	maxGlobalMaxResults           = 1000
 )
 
+// 全局批次削峰参数的边界：默认值刻意保守（低并发 + 间隔摊开），
+// 因为全局计划会对所有非禁用账号发起真实上游调用，突发并发是
+// 触发时刻负载尖峰的直接来源。
+const (
+	// defaultGlobalMaxWorkers 并发上限默认值（原硬编码 10 过于激进）。
+	defaultGlobalMaxWorkers = 3
+	// maxGlobalMaxWorkers 并发上限边界：单账号测试是完整流式调用，
+	// 过高并发只会把负载尖峰换个位置爆发。
+	maxGlobalMaxWorkers = 20
+	// maxGlobalDispatchIntervalSeconds 派发间隔上限（10 分钟）：
+	// 再大只会无限拉长批次而没有额外削峰收益。
+	maxGlobalDispatchIntervalSeconds = 600
+)
+
 // UpdateGlobalPlan 校验并更新全局定时测试配置：cron、平台模型映射、
-// 自动恢复与保留结果数；保存时重算 next_run_at，避免旧周期残留。
+// 自动恢复、保留结果数与削峰参数（并发上限/派发间隔）；保存时重算
+// next_run_at，避免旧周期残留。
 // Enabled 传 nil 时保留现有开关状态（PATCH 语义）。
 func (s *ScheduledTestService) UpdateGlobalPlan(ctx context.Context, plan *ScheduledTestPlan, enabled *bool) (*ScheduledTestPlan, error) {
 	existing, err := s.planRepo.GetGlobal(ctx)
@@ -129,6 +144,25 @@ func (s *ScheduledTestService) UpdateGlobalPlan(ctx context.Context, plan *Sched
 	if existing.MaxResults > maxGlobalMaxResults {
 		return nil, fmt.Errorf("max_results must not exceed %d", maxGlobalMaxResults)
 	}
+
+	// 削峰参数归一化：并发 <=0 视为未传，回落默认值；间隔 <0 归 0
+	// （突发模式）。超上限直接拒绝保存，与 max_results 的显式报错风格一致，
+	// 避免管理员配置被静默钳制后与 UI 展示不一致。
+	existing.MaxWorkers = plan.MaxWorkers
+	if existing.MaxWorkers <= 0 {
+		existing.MaxWorkers = defaultGlobalMaxWorkers
+	}
+	if existing.MaxWorkers > maxGlobalMaxWorkers {
+		return nil, fmt.Errorf("max_workers must not exceed %d", maxGlobalMaxWorkers)
+	}
+	existing.DispatchIntervalSeconds = plan.DispatchIntervalSeconds
+	if existing.DispatchIntervalSeconds < 0 {
+		existing.DispatchIntervalSeconds = 0
+	}
+	if existing.DispatchIntervalSeconds > maxGlobalDispatchIntervalSeconds {
+		return nil, fmt.Errorf("dispatch_interval_seconds must not exceed %d", maxGlobalDispatchIntervalSeconds)
+	}
+
 	existing.NextRunAt = &nextRun
 
 	return s.planRepo.Update(ctx, existing)

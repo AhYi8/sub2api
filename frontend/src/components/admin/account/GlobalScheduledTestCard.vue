@@ -93,6 +93,36 @@
         </div>
       </div>
 
+      <!-- 执行削峰：并发上限 + 派发间隔，避免整点突发全量测试造成负载尖峰 -->
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label class="input-label">{{ t('admin.scheduledTests.global.maxWorkers') }}</label>
+          <input
+            v-model.number="form.max_workers"
+            type="number"
+            min="1"
+            max="20"
+            class="input"
+          />
+          <p class="mt-1 text-xs text-gray-400">
+            {{ t('admin.scheduledTests.global.maxWorkersHint') }}
+          </p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.scheduledTests.global.dispatchInterval') }}</label>
+          <input
+            v-model.number="form.dispatch_interval_seconds"
+            type="number"
+            min="0"
+            max="600"
+            class="input"
+          />
+          <p class="mt-1 text-xs text-gray-400">
+            {{ t('admin.scheduledTests.global.dispatchIntervalHint') }}
+          </p>
+        </div>
+      </div>
+
       <!-- 最大结果数 -->
       <div class="max-w-md">
         <label class="input-label">{{ t('admin.scheduledTests.maxResults') }}</label>
@@ -177,6 +207,10 @@ const form = reactive({
   cron_expression: '0 * * * *',
   auto_recover: true,
   max_results: 50,
+  // 削峰默认值与服务端归一化保持一致：低并发 + 间隔摊开。
+  // 间隔类型含 ''：v-model.number 清空输入时运行时得到空串，需参与归一化判断
+  max_workers: 3,
+  dispatch_interval_seconds: 5 as number | '',
   platform_models: {} as Record<string, string>
 })
 
@@ -223,6 +257,9 @@ const applyPlanToForm = (p: ScheduledTestPlan) => {
   form.cron_expression = p.cron_expression || '0 * * * *'
   form.auto_recover = p.auto_recover
   form.max_results = p.max_results || 50
+  // 削峰参数缺省时回落与服务端一致的默认值，避免本地展示与实际生效漂移
+  form.max_workers = p.max_workers || 3
+  form.dispatch_interval_seconds = p.dispatch_interval_seconds ?? 5
   initPlatformModels(p.platform_models)
   const detected = detectFrequencyMode(form.cron_expression)
   frequencyMode.value = detected.mode
@@ -250,6 +287,17 @@ const canSave = computed(() => {
 
 const handleSave = async () => {
   if (!canSave.value) return
+  // 数值归一化（提交前）：空串/NaN 回落默认（并发 3、间隔 5），显式 0
+  // 必须保留——间隔 0 是合法的突发模式，不能被默认值吞掉；小数取整，
+  // 避免后端 int 字段解码失败返回 400。
+  const workersNum = Number(form.max_workers)
+  const intervalRaw = form.dispatch_interval_seconds
+  const intervalNum = Number(intervalRaw)
+  const normalizedWorkers = Math.max(1, Math.round(workersNum) || 3)
+  const normalizedInterval =
+    intervalRaw === '' || Number.isNaN(intervalNum)
+      ? 5
+      : Math.max(0, Math.round(intervalNum))
   saving.value = true
   try {
     plan.value = await adminAPI.scheduledTests.updateGlobal({
@@ -257,6 +305,8 @@ const handleSave = async () => {
       enabled: form.enabled,
       auto_recover: form.auto_recover,
       max_results: Number(form.max_results) || 50,
+      max_workers: normalizedWorkers,
+      dispatch_interval_seconds: normalizedInterval,
       platform_models: { ...form.platform_models }
     })
     // 用服务端规范化后的配置重建表单，保证展示与实际生效一致

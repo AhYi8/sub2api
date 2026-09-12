@@ -2388,6 +2388,10 @@ export interface ScheduledTestPlan {
   next_run_at: string | null
   created_at: string
   updated_at: string
+  /** 仅全局计划：批次内并发上限（削峰，默认 3） */
+  max_workers?: number
+  /** 仅全局计划：相邻测试的派发间隔秒数（0 = 突发，默认 5） */
+  dispatch_interval_seconds?: number
 }
 
 export interface ScheduledTestResult {
@@ -2428,6 +2432,10 @@ export interface UpdateGlobalScheduledTestRequest {
   max_results?: number
   auto_recover?: boolean
   platform_models?: Record<string, string>
+  /** 批次内并发上限（不传或非正数时服务端回落默认值 3） */
+  max_workers?: number
+  /** 相邻测试的派发间隔秒数；0 = 突发。注意：字段缺省与服务端零值不可区分，会按 0（突发）保存，如需默认间隔请显式传 5 */
+  dispatch_interval_seconds?: number
 }
 
 // Payment types

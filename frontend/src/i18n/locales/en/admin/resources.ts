@@ -54,6 +54,10 @@ export default {
         platformModelsHint: 'Fill in the test model ID for each platform; leave empty to skip that platform',
         modelPlaceholder: 'e.g. claude-sonnet-4 (empty = skip)',
         maxResultsHint: 'Max results kept per account under the global plan',
+        maxWorkers: 'Max concurrency',
+        maxWorkersHint: 'Upper limit of tests running simultaneously within a batch (1-20), default 3; lower values noticeably reduce the load spike during testing',
+        dispatchInterval: 'Dispatch interval (seconds)',
+        dispatchIntervalHint: 'Wait N seconds before dispatching the next test (0-600), default 5; estimated batch duration ≈ accounts × interval (first test dispatches immediately), 0 means burst mode',
         unsavedHint: 'Save failed — current edits are not applied',
         reload: 'Reload'
       }

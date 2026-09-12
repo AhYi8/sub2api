@@ -54,6 +54,10 @@ export default {
         platformModelsHint: '为每个平台填写测试用的模型 ID，留空表示跳过该平台',
         modelPlaceholder: '如 claude-sonnet-4（留空跳过）',
         maxResultsHint: '每个账号在全局计划下最多保留的结果条数',
+        maxWorkers: '最大并发数',
+        maxWorkersHint: '批次内同时执行的测试数量上限（1-20），默认 3；降低可显著减小测试时刻的负载尖峰',
+        dispatchInterval: '派发间隔（秒）',
+        dispatchIntervalHint: '每隔 N 秒派发下一个测试（0-600），默认 5；批次预计时长 ≈ 账号数 × 间隔（首条立即派发），填 0 表示突发全量测试',
         unsavedHint: '保存失败，当前为未保存的修改',
         reload: '重新加载'
       }

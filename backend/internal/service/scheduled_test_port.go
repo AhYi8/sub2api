@@ -22,6 +22,13 @@ type ScheduledTestPlan struct {
 	NextRunAt      *time.Time        `json:"next_run_at"`
 	CreatedAt      time.Time         `json:"created_at"`
 	UpdatedAt      time.Time         `json:"updated_at"`
+
+	// MaxWorkers 是全局批次内的并发上限；DispatchIntervalSeconds 是相邻
+	// 两次测试的派发间隔（秒）。两者仅被全局计划路径读取：把“整点突发
+	// 全量测试”摊开成时间窗，削平服务器负载/CPU 尖峰。按账号计划行上
+	// 的值无意义，runner 不读取。
+	MaxWorkers              int `json:"max_workers"`
+	DispatchIntervalSeconds int `json:"dispatch_interval_seconds"`
 }
 
 // ScheduledTestResult represents a single test execution result.

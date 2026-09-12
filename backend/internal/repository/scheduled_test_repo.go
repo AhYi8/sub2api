@@ -19,14 +19,14 @@ func NewScheduledTestPlanRepository(db *sql.DB) service.ScheduledTestPlanReposit
 	return &scheduledTestPlanRepository{db: db}
 }
 
-const scheduledTestPlanColumns = `id, account_id, model_id, cron_expression, enabled, max_results, auto_recover, last_run_at, next_run_at, created_at, updated_at, platform_models`
+const scheduledTestPlanColumns = `id, account_id, model_id, cron_expression, enabled, max_results, auto_recover, last_run_at, next_run_at, created_at, updated_at, platform_models, max_workers, dispatch_interval_seconds`
 
 func (r *scheduledTestPlanRepository) Create(ctx context.Context, plan *service.ScheduledTestPlan) (*service.ScheduledTestPlan, error) {
 	row := r.db.QueryRowContext(ctx, `
-		INSERT INTO scheduled_test_plans (account_id, model_id, cron_expression, enabled, max_results, auto_recover, next_run_at, platform_models, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+		INSERT INTO scheduled_test_plans (account_id, model_id, cron_expression, enabled, max_results, auto_recover, next_run_at, platform_models, max_workers, dispatch_interval_seconds, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
 		RETURNING `+scheduledTestPlanColumns+`
-	`, plan.AccountID, plan.ModelID, plan.CronExpression, plan.Enabled, plan.MaxResults, plan.AutoRecover, plan.NextRunAt, platformModelsJSON(plan.PlatformModels))
+	`, plan.AccountID, plan.ModelID, plan.CronExpression, plan.Enabled, plan.MaxResults, plan.AutoRecover, plan.NextRunAt, platformModelsJSON(plan.PlatformModels), plan.MaxWorkers, plan.DispatchIntervalSeconds)
 	return scanPlan(row)
 }
 
@@ -78,10 +78,10 @@ func (r *scheduledTestPlanRepository) ListDue(ctx context.Context, now time.Time
 func (r *scheduledTestPlanRepository) Update(ctx context.Context, plan *service.ScheduledTestPlan) (*service.ScheduledTestPlan, error) {
 	row := r.db.QueryRowContext(ctx, `
 		UPDATE scheduled_test_plans
-		SET model_id = $2, cron_expression = $3, enabled = $4, max_results = $5, auto_recover = $6, next_run_at = $7, platform_models = $8, updated_at = NOW()
+		SET model_id = $2, cron_expression = $3, enabled = $4, max_results = $5, auto_recover = $6, next_run_at = $7, platform_models = $8, max_workers = $9, dispatch_interval_seconds = $10, updated_at = NOW()
 		WHERE id = $1
 		RETURNING `+scheduledTestPlanColumns+`
-	`, plan.ID, plan.ModelID, plan.CronExpression, plan.Enabled, plan.MaxResults, plan.AutoRecover, plan.NextRunAt, platformModelsJSON(plan.PlatformModels))
+	`, plan.ID, plan.ModelID, plan.CronExpression, plan.Enabled, plan.MaxResults, plan.AutoRecover, plan.NextRunAt, platformModelsJSON(plan.PlatformModels), plan.MaxWorkers, plan.DispatchIntervalSeconds)
 	return scanPlan(row)
 }
 
@@ -211,6 +211,7 @@ func scanPlan(row scannable) (*service.ScheduledTestPlan, error) {
 	if err := row.Scan(
 		&p.ID, &p.AccountID, &p.ModelID, &p.CronExpression, &p.Enabled, &p.MaxResults, &p.AutoRecover,
 		&p.LastRunAt, &p.NextRunAt, &p.CreatedAt, &p.UpdatedAt, &platformModels,
+		&p.MaxWorkers, &p.DispatchIntervalSeconds,
 	); err != nil {
 		return nil, err
 	}

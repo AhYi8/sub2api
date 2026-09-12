@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -15,9 +16,28 @@ import (
 
 const scheduledTestDefaultMaxWorkers = 10
 
-// scheduledTestGlobalTimeout 全局批次执行超时：账号量可能远大于按账号计划，
-// 使用独立于单轮 tick（5 分钟）的更长上限，避免大批账号被中途截断。
-const scheduledTestGlobalTimeout = 30 * time.Minute
+// scheduledTestGlobalListTimeout 候选账号列表查询超时：批次超时依赖目标数，
+// 需先拿到列表才能计算，因此列表查询使用独立短超时。
+const scheduledTestGlobalListTimeout = 5 * time.Minute
+
+// 全局批次自适应超时的三个基准：
+//   - perTestBudget：单次测试的耗时余量（真实流式调用通常秒级完成，
+//     慢上游也留足冗余）；批次超时 = 派发总时长（间隔 × 目标数）+ 该余量；
+//   - minBatchTimeout：下限保持旧的固定 30 分钟语义，间隔为 0 或目标
+//     很少时批次行为与改造前完全一致；
+//   - maxBatchTimeout：上限防呆。管理员把间隔/账号数配得极大时，批次
+//     到上限被截断，下一轮 cron 将对全部候选账号重新调度测试（候选查询
+//     无“本轮已测”过滤，非断点续测；ClaimForRun 已推进 next_run_at，
+//     不会重复触发）。
+const (
+	scheduledTestPerTestBudget   = 10 * time.Minute
+	scheduledTestMinBatchTimeout = 30 * time.Minute
+	scheduledTestMaxBatchTimeout = 6 * time.Hour
+)
+
+// scheduledTestBatchTruncatedLogFmt 批次因 ctx 到期被截断的日志：
+// 派发停止，下一轮 cron 将重新调度全部候选账号（非断点续测）。
+const scheduledTestBatchTruncatedLogFmt = "[ScheduledTestRunner] global plan=%d batch ctx done after dispatching %d/%d targets; all candidate accounts will be re-tested next round"
 
 // ScheduledTestRunnerService periodically scans due test plans and executes them.
 type ScheduledTestRunnerService struct {
@@ -30,6 +50,13 @@ type ScheduledTestRunnerService struct {
 	accountRepo AccountRepository
 	// accountSrc 提供全局定时测试的候选账号（所有非禁用账号）。
 	accountSrc ScheduledTestAccountSource
+	// runTest 执行单次账号测试。收敛为函数字段：生产路径在构造时绑定
+	// accountTestSvc.RunTestBackground，单元测试可替换为时序/并发桩，
+	// 从而验证派发间隔与并发上限的真实行为。
+	runTest func(ctx context.Context, accountID int64, modelID string) (*ScheduledTestResult, error)
+	// batchTimeoutFn 计算全局批次自适应超时；独立函数字段便于单测注入
+	// 短超时验证截断行为，生产路径绑定 computeGlobalBatchTimeout。
+	batchTimeoutFn func(targetCount, intervalSeconds int) time.Duration
 	// globalRunning 进程内互斥标记：高频 cron + 大账号量时单批次可能超过
 	// cron 间隔，ClaimForRun 只防同一到期点重复认领，这里防止上一批次
 	// 未完成时新批次并发测同一账号。
@@ -57,6 +84,16 @@ func NewScheduledTestRunnerService(
 		cfg:            cfg,
 		accountRepo:    accountRepo,
 	}
+	// 全局批次单测入口绑定：svc 为 nil（既有测试传 nil，只走跳过路径）
+	// 时绑定显式报错兜底，避免运行期空指针。
+	if accountTestSvc != nil {
+		s.runTest = accountTestSvc.RunTestBackground
+	} else {
+		s.runTest = func(ctx context.Context, accountID int64, modelID string) (*ScheduledTestResult, error) {
+			return nil, fmt.Errorf("account test service unavailable")
+		}
+	}
+	s.batchTimeoutFn = computeGlobalBatchTimeout
 	// 通过类型断言获取候选账号查询能力，避免扩张宽泛的账号仓储接口；
 	// 断言失败属装配缺陷，启动期即大声报错，而不是运行期静默降级。
 	if src, ok := accountRepo.(ScheduledTestAccountSource); ok {
@@ -157,8 +194,9 @@ func (s *ScheduledTestRunnerService) runScheduled() {
 // 按账号平台取 platform_models 中配置的测试模型，未配置模型的平台跳过；
 // 结果仍按账号写入 scheduled_test_results（account_id 冗余），便于回看。
 //
-// 执行前先通过 ClaimForRun 原子推进 next_run_at：全局批次最长 30 分钟，
-// 若沿用“执行完再推进”会在批次进行期间被每分钟 tick（或多实例）重复触发。
+// 执行前先通过 ClaimForRun 原子推进 next_run_at：全局批次超时自适应
+// （30 分钟~6 小时，见 computeGlobalBatchTimeout），若沿用“执行完再推进”
+// 会在批次进行期间被每分钟 tick（或多实例）重复触发。
 // 进程内再用 globalRunning 互斥：高频 cron 下上一批次未完成时，新到期的
 // 批次直接跳过，避免对同一账号并发测试/自动恢复。
 func (s *ScheduledTestRunnerService) runGlobalPlan(plan *ScheduledTestPlan) {
@@ -191,11 +229,10 @@ func (s *ScheduledTestRunnerService) runGlobalPlan(plan *ScheduledTestPlan) {
 		return
 	}
 
-	// 独立超时：全局批次账号量大，不受单轮 tick 的 5 分钟限制。
-	ctx, cancel := context.WithTimeout(context.Background(), scheduledTestGlobalTimeout)
-	defer cancel()
-
-	accounts, err := s.accountSrc.ListGlobalScheduledTestCandidates(ctx)
+	// 候选账号查询使用独立短超时：批次超时依赖目标数，需先拿到列表。
+	listCtx, cancelList := context.WithTimeout(context.Background(), scheduledTestGlobalListTimeout)
+	defer cancelList()
+	accounts, err := s.accountSrc.ListGlobalScheduledTestCandidates(listCtx)
 	if err != nil {
 		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] global plan=%d ListGlobalScheduledTestCandidates error: %v", plan.ID, err)
 		return
@@ -215,17 +252,57 @@ func (s *ScheduledTestRunnerService) runGlobalPlan(plan *ScheduledTestPlan) {
 		}
 		targets = append(targets, target{accountID: acc.ID, modelID: modelID})
 	}
-	logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] global plan=%d: %d accounts to test, %d skipped (platform model not configured)", plan.ID, len(targets), skipped)
 
-	sem := make(chan struct{}, scheduledTestDefaultMaxWorkers)
+	// 削峰参数归一化：workers<=0（未迁移行/测试构造）回落保守默认 3；
+	// 间隔负值归 0——0 是合法的突发配置，不回落 5（默认 5 由迁移列
+	// 默认值与保存时归一化保证，runner 只防御非法负值）。
+	workers := plan.MaxWorkers
+	if workers <= 0 {
+		workers = defaultGlobalMaxWorkers
+	}
+	intervalSeconds := plan.DispatchIntervalSeconds
+	if intervalSeconds < 0 {
+		intervalSeconds = 0
+	}
+	interval := time.Duration(intervalSeconds) * time.Second
+
+	// 自适应批次超时：派发总时长 + 单测预算，小批次保持旧 30 分钟语义，
+	// 超大批次到上限截断（下一轮 cron 全量重测）。一次计算供 ctx 与
+	// 日志共用，避免注入桩时日志口径与实际超时不一致。
+	batchTimeout := s.batchTimeoutFn(len(targets), intervalSeconds)
+	ctx, cancel := context.WithTimeout(context.Background(), batchTimeout)
+	defer cancel()
+
+	logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] global plan=%d: %d accounts to test, %d skipped (platform model not configured), workers=%d, dispatch interval=%ds, batch timeout=%s", plan.ID, len(targets), skipped, workers, intervalSeconds, batchTimeout)
+
+	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
-	for _, t := range targets {
+dispatch:
+	for i, t := range targets {
+		// 派发间隔摊开：除首个目标外，每个目标派发前等待 interval。
+		// 等待放在抢信号量之前——节奏控制的是“提交速率”，而不是占着
+		// 并发槽空等；ctx 到期（自适应超时/进程停止）时停止派发，
+		// 已派发目标继续跑完，下一轮 cron 将重新调度全部候选账号。
+		if i > 0 && interval > 0 {
+			select {
+			case <-ctx.Done():
+				logger.LegacyPrintf("service.scheduled_test_runner", scheduledTestBatchTruncatedLogFmt, plan.ID, i, len(targets))
+				break dispatch
+			case <-time.After(interval):
+			}
+		} else if ctx.Err() != nil {
+			// 非阻塞 ctx 检查：interval=0（突发模式）或首个目标时循环内
+			// 没有等待点，必须在此拦住，否则批次超时后剩余目标仍会被
+			// 全量派发，产生日志风暴与瞬时 goroutine churn。
+			logger.LegacyPrintf("service.scheduled_test_runner", scheduledTestBatchTruncatedLogFmt, plan.ID, i, len(targets))
+			break dispatch
+		}
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(tg target) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			result, err := s.accountTestSvc.RunTestBackground(ctx, tg.accountID, tg.modelID)
+			result, err := s.runTest(ctx, tg.accountID, tg.modelID)
 			if err != nil {
 				logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] global plan=%d account=%d RunTestBackground error: %v", plan.ID, tg.accountID, err)
 				return
@@ -241,6 +318,20 @@ func (s *ScheduledTestRunnerService) runGlobalPlan(plan *ScheduledTestPlan) {
 		}(t)
 	}
 	wg.Wait()
+}
+
+// computeGlobalBatchTimeout 计算全局批次的自适应超时：
+// 派发总时长（间隔 × 目标数）+ 单测预算余量。下限保持旧的 30 分钟
+// 固定语义；上限 6 小时防呆，超限批次被截断后由下一轮 cron 全量重测。
+func computeGlobalBatchTimeout(targetCount, intervalSeconds int) time.Duration {
+	batch := time.Duration(intervalSeconds)*time.Second*time.Duration(targetCount) + scheduledTestPerTestBudget
+	if batch < scheduledTestMinBatchTimeout {
+		return scheduledTestMinBatchTimeout
+	}
+	if batch > scheduledTestMaxBatchTimeout {
+		return scheduledTestMaxBatchTimeout
+	}
+	return batch
 }
 
 func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *ScheduledTestPlan) {

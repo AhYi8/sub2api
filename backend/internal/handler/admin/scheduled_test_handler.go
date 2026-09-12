@@ -184,6 +184,9 @@ type updateGlobalScheduledTestRequest struct {
 	MaxResults     int               `json:"max_results"`
 	AutoRecover    *bool             `json:"auto_recover"`
 	PlatformModels map[string]string `json:"platform_models"`
+	// 削峰参数：批次并发上限与相邻测试的派发间隔（秒）。
+	MaxWorkers              int `json:"max_workers"`
+	DispatchIntervalSeconds int `json:"dispatch_interval_seconds"`
 }
 
 // GetGlobal GET /admin/scheduled-tests/global
@@ -213,6 +216,10 @@ func (h *ScheduledTestHandler) UpdateGlobal(c *gin.Context) {
 		CronExpression: req.CronExpression,
 		PlatformModels: req.PlatformModels,
 		AutoRecover:    true,
+		// 削峰参数直接透传：max_workers 未传/非正数由服务层回落默认 3；
+		// dispatch_interval_seconds 未传即 0（突发），如需默认间隔须显式传 5。
+		MaxWorkers:              req.MaxWorkers,
+		DispatchIntervalSeconds: req.DispatchIntervalSeconds,
 	}
 	if req.AutoRecover != nil {
 		plan.AutoRecover = *req.AutoRecover
