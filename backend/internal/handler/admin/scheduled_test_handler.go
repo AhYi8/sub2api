@@ -195,7 +195,7 @@ func (h *ScheduledTestHandler) GetGlobal(c *gin.Context) {
 	if err != nil {
 		// 全局行缺失（迁移未执行或被外部删除）返回 404，避免误导性的 500。
 		if errors.Is(err, sql.ErrNoRows) {
-			response.NotFound(c, "global scheduled test plan not found (migration 235 required)")
+			response.NotFound(c, "global scheduled test plan not found (migration 241 required)")
 			return
 		}
 		response.InternalError(c, err.Error())

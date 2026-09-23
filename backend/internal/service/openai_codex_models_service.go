@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -48,14 +49,16 @@ const (
 
 // FilterCodexModelIDsForGroup removes dedicated media-generation models,
 // wildcard mapping keys, and Codex automatic modes from a client catalog.
-// Automatic modes are retained only when the group's enabled custom model list
+// Automatic modes are retained only when the group's enabled model allowlist
 // explicitly selects the exact slug; account model mappings describe routing
 // and are not feature opt-ins. Wildcard keys such as "foo-*" are routing
-// patterns, not concrete Codex models.
+// patterns, not concrete Codex models. When the allowlist is enabled the
+// catalog is additionally restricted by FilterForListing (wildcard entries
+// expand against the catalog).
 func FilterCodexModelIDsForGroup(modelIDs []string, group *Group) []string {
 	explicitlyEnabled := make(map[string]struct{})
-	if group != nil && group.CustomModelsListEnabled() {
-		for _, modelID := range group.ModelsListConfig.Models {
+	if group != nil && group.ModelAllowlistEnabled() {
+		for _, modelID := range group.ModelAllowlist.Models {
 			modelID = strings.TrimSpace(modelID)
 			if strings.HasPrefix(modelID, codexAutoModelPrefix) {
 				explicitlyEnabled[modelID] = struct{}{}
@@ -81,6 +84,9 @@ func FilterCodexModelIDsForGroup(modelIDs []string, group *Group) []string {
 			}
 		}
 		filtered = append(filtered, modelID)
+	}
+	if group != nil && group.ModelAllowlistEnabled() {
+		filtered = group.ModelAllowlist.FilterForListing(filtered)
 	}
 	return filtered
 }
@@ -111,8 +117,8 @@ type OpenAIModelsResponse struct {
 	NotModified                  bool
 }
 
-// BuildGroupConfiguredCodexModelsManifest builds a Codex catalog exclusively
-// from the public model names configured on accounts in an OpenAI group. The
+// BuildGroupConfiguredCodexModelsManifest builds a Codex catalog from configured
+// public model names, supplemented by defaults for unmapped OpenAI accounts. The
 // boolean result distinguishes "no explicit configuration" from a configured
 // catalog that becomes empty after group-level filtering.
 func (s *OpenAIGatewayService) BuildGroupConfiguredCodexModelsManifest(
@@ -137,6 +143,7 @@ func (s *OpenAIGatewayService) BuildGroupConfiguredCodexModelsManifest(
 		PlatformOpenAI,
 		configuredModels,
 		catalog,
+		group,
 		nil,
 		true,
 	)
@@ -146,8 +153,8 @@ func (s *OpenAIGatewayService) BuildGroupConfiguredCodexModelsManifest(
 	body, _, err = mergeConfiguredCodexModelsManifest(
 		body,
 		nil,
-		group.ModelsListConfig.Models,
-		group.CustomModelsListEnabled(),
+		group.ModelAllowlist.Models,
+		group.ModelAllowlistEnabled(),
 	)
 	if err != nil {
 		return nil, false, fmt.Errorf("build group configured Codex models: %w", err)
@@ -191,14 +198,14 @@ func (s *OpenAIGatewayService) MergeGroupConfiguredCodexModels(
 	body, changed, err := mergeConfiguredCodexModelsManifest(
 		manifest.Body,
 		configuredModels,
-		group.ModelsListConfig.Models,
-		group.CustomModelsListEnabled(),
+		group.ModelAllowlist.Models,
+		group.ModelAllowlistEnabled(),
 	)
 	if err != nil {
 		return fmt.Errorf("merge group configured Codex models: %w", err)
 	}
-	if group.CodexModelsManifestConfig.Enabled && group.CustomModelsListEnabled() {
-		body, err = orderPinnedCodexModelsBySelection(body, group.ModelsListConfig.Models)
+	if group.CodexModelsManifestConfig.Enabled && group.ModelAllowlistEnabled() {
+		body, err = orderPinnedCodexModelsBySelection(body, group.ModelAllowlist)
 		if err != nil {
 			return fmt.Errorf("order pinned Codex models: %w", err)
 		}
@@ -255,6 +262,8 @@ func loadCodexGroupCatalogAccounts(ctx context.Context, repo AccountRepository, 
 			PlatformKimi,
 			PlatformZhipu,
 			PlatformDeepseek,
+			PlatformMiniMax,
+			PlatformOpenCodeGo,
 		},
 		false,
 	)
@@ -289,16 +298,16 @@ func openAIConfiguredCodexModelIDs(accounts []Account) []string {
 }
 
 func openAIConfiguredCodexModelIDsForGroup(accounts []Account, group *Group) []string {
-	models := openAIConfiguredCodexModelIDs(accounts)
-	if group == nil || !group.CustomModelsListEnabled() {
+	models := supplementUnmappedOpenAIModels(accounts, openAIConfiguredCodexModelIDs(accounts))
+	if group == nil || !group.ModelAllowlistEnabled() {
 		return models
 	}
 
-	seen := make(map[string]struct{}, len(models)+len(group.ModelsListConfig.Models))
+	seen := make(map[string]struct{}, len(models)+len(group.ModelAllowlist.Models))
 	for _, modelID := range models {
 		seen[modelID] = struct{}{}
 	}
-	for _, selectedModel := range group.ModelsListConfig.Models {
+	for _, selectedModel := range group.ModelAllowlist.Models {
 		selectedModel = strings.TrimSpace(selectedModel)
 		if selectedModel == "" || strings.Contains(selectedModel, "*") {
 			continue
@@ -373,6 +382,7 @@ type configuredCodexModelDescriptor struct {
 	Description                       string                          `json:"description"`
 	DefaultReasoningLevel             *string                         `json:"default_reasoning_level,omitempty"`
 	SupportedReasoningLevels          []configuredCodexReasoningLevel `json:"supported_reasoning_levels"`
+	MultiAgentReasoningEffort         *string                         `json:"multi_agent_reasoning_effort,omitempty"`
 	ShellType                         string                          `json:"shell_type"`
 	Visibility                        string                          `json:"visibility"`
 	SupportedInAPI                    bool                            `json:"supported_in_api"`
@@ -435,7 +445,7 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 		Priority:                          configuredCodexModelPriority,
 		AdditionalSpeedTiers:              []string{},
 		ServiceTiers:                      []configuredCodexServiceTier{},
-		ModelMessages:                     configuredCodexModelMessages{InstructionsTemplate: openai.CodexBaseInstructionsForModel(modelID)},
+		ModelMessages:                     configuredCodexModelMessages{InstructionsTemplate: codexInstructionsTemplateForModel(modelID)},
 		SupportsReasoningSummaryParameter: true,
 		DefaultReasoningSummary:           "auto",
 		WebSearchToolType:                 "text",
@@ -476,6 +486,10 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 	}
 
 	if isClaudeCodexModel(modelID) {
+		if claude.IsOpus55(modelID) {
+			descriptor.ContextWindow = 1_000_000
+			descriptor.MaxContextWindow = 1_000_000
+		}
 		descriptor.DisplayName = claudeCodexDisplayName(modelID)
 		descriptor.Description = "Claude coding and reasoning model routed through Sub2API."
 		descriptor.SupportsParallelToolCalls = true
@@ -500,10 +514,17 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 			descriptor.SupportedReasoningLevels = configuredCodexGPTReasoningLevels(modelID)
 			descriptor.DefaultReasoningSummary = "none"
 			descriptor.TruncationPolicy = configuredCodexTruncationPolicy{Mode: "tokens", Limit: configuredCodexToolOutputMaxTokens}
-			if isOpenAIGPT56Model(modelID) {
+			// GPT-6 Sol/Luna retain the existing 5.6 Codex window as an offline
+			// compatibility template; live account metadata remains authoritative.
+			if isOpenAIGPT56Model(modelID) || openai.IsGPT6SolOrLunaModelSpelling(modelID) {
 				descriptor.MaxContextWindow = configuredCodexGPT56MaxContext
 			}
 			if isOpenAIGPT6AstraModel(modelID) {
+				// Codex resolves the Ultra workflow to this effort before inference.
+				// openai/codex a9896da3: codex-rs/models-manager/models.json.
+				multiAgentEffort := "xhigh"
+				descriptor.MultiAgentReasoningEffort = &multiAgentEffort
+				descriptor.MultiAgentVersion = "v2"
 				descriptor.ContextWindow = configuredCodexGPT6AstraContext
 				descriptor.MaxContextWindow = configuredCodexGPT6AstraContext
 			}
@@ -544,8 +565,8 @@ func configuredCodexSupportsPriorityServiceTier(modelID string) bool {
 			return true
 		}
 	}
-	// GPT-6 Astra advertises Fast via service_tier=priority in public model metadata.
-	return isOpenAIGPT6AstraModel(modelID)
+	// GPT-6 models advertise Fast via service_tier=priority in public model metadata.
+	return isOpenAIGPT6Model(modelID)
 }
 
 func configuredCodexSupportsUltrafastServiceTier(modelID string) bool {
@@ -608,19 +629,60 @@ func configuredCodexGPTReasoningLevels(modelID string) []configuredCodexReasonin
 		{Effort: "xhigh", Description: "Extra-high reasoning depth for difficult tasks"},
 	}
 	normalized := getNormalizedCodexModel(modelID)
-	if isOpenAIGPT56Model(modelID) || isOpenAIGPT6AstraModel(modelID) {
+	if isOpenAIGPT56Model(modelID) || isOpenAIGPT6Model(modelID) {
 		levels = append(levels, configuredCodexReasoningLevel{
 			Effort:      "max",
 			Description: "Maximum reasoning depth for complex tasks",
 		})
 	}
-	if normalized == "gpt-5.6-sol" || normalized == "gpt-5.6-terra" {
+	if isOpenAIGPT6AstraModel(modelID) || normalized == "gpt-5.6-sol" || normalized == "gpt-5.6-terra" {
 		levels = append(levels, configuredCodexReasoningLevel{
 			Effort:      "ultra",
 			Description: "Maximum reasoning with automatic task delegation",
 		})
 	}
 	return levels
+}
+
+// codexGPTIdentityPatterns match the GPT self-identification that the bundled
+// Codex prompts open with:
+//   - "You are Codex, a coding agent based on GPT-5." / "…an agent based on GPT-6." / "You are Codex, based on GPT-5."
+//   - "You are GPT-5.1 running in the Codex CLI, …"
+var codexGPTIdentityPatterns = []struct {
+	re   *regexp.Regexp
+	repl string
+}{
+	{regexp.MustCompile(`,?\s*based on GPT-\d+(?:\.\d+)?(?:-[A-Za-z0-9]+)*`), ""},
+	{regexp.MustCompile(`\bYou are GPT-\d+(?:\.\d+)?(?:-[A-Za-z0-9]+)*`), "You are Codex"},
+}
+
+// codexInstructionsTemplateForModel returns the Codex base prompt advertised for
+// modelID in the models manifest.
+//
+// OpenAI GPT models keep the bundled prompt verbatim. Every other family the
+// manifest can list (Gemini, Claude, DeepSeek, Grok, gpt-oss, custom aliases)
+// gets the same prompt without the GPT self-identification: the claim is false
+// for those models, and Google's Antigravity backend answers requests whose
+// system prompt is the Codex prompt carrying a "GPT-5" identity with
+// 429 RESOURCE_EXHAUSTED — which also puts the account into rate-limit
+// cooldown. Codex sends this template as `instructions` for the selected model.
+func codexInstructionsTemplateForModel(modelID string) string {
+	base := openai.CodexBaseInstructionsForModel(modelID)
+	if codexModelKeepsGPTIdentity(modelID) {
+		return base
+	}
+	for _, p := range codexGPTIdentityPatterns {
+		base = p.re.ReplaceAllString(base, p.repl)
+	}
+	return base
+}
+
+// codexModelKeepsGPTIdentity reports whether modelID is an OpenAI GPT model
+// whose Codex prompt may claim a GPT identity. gpt-oss models are open-weight
+// and typically served by non-OpenAI providers, so they do not.
+func codexModelKeepsGPTIdentity(modelID string) bool {
+	return isOpenAICodexGPTModel(modelID) &&
+		!strings.HasPrefix(canonicalizeOpenAIModelAliasSpelling(modelID), "gpt-oss")
 }
 
 func isOpenAICodexGPTModel(modelID string) bool {
@@ -633,12 +695,12 @@ func isOpenAICodexGPTModel(modelID string) bool {
 
 func isOpenAICodexReasoningGPTModel(modelID string) bool {
 	normalized := canonicalizeOpenAIModelAliasSpelling(modelID)
-	return isOpenAIGPT6AstraModel(normalized) || strings.HasPrefix(normalized, "gpt-5")
+	return isOpenAIGPT6Model(normalized) || strings.HasPrefix(normalized, "gpt-5")
 }
 
 func isOpenAICodexImageInputModel(modelID string) bool {
 	normalized := canonicalizeOpenAIModelAliasSpelling(modelID)
-	return isOpenAIGPT6AstraModel(normalized) ||
+	return isOpenAIGPT6Model(normalized) ||
 		strings.HasPrefix(normalized, "gpt-5") ||
 		strings.HasPrefix(normalized, "gpt-4o") ||
 		strings.HasPrefix(normalized, "gpt-4.1") ||
@@ -818,6 +880,7 @@ func (s *GatewayService) BuildCodexModelsManifestForGroup(
 		effectivePlatform,
 		modelIDs,
 		catalog,
+		group,
 		compositeRoutes,
 		compositeRoutesAvailable,
 	)
@@ -827,6 +890,7 @@ func buildCodexModelsManifestForAccounts(
 	effectivePlatform string,
 	modelIDs []string,
 	accounts []Account,
+	group *Group,
 	compositeRoutes []CompositeModelRoute,
 	compositeRoutesAvailable bool,
 ) ([]byte, error) {
@@ -864,6 +928,7 @@ func buildCodexModelsManifestForAccounts(
 			effectivePlatform,
 			modelID,
 			accounts,
+			group,
 			compositeRoutes,
 			compositeRoutesAvailable,
 		); ok {
@@ -900,12 +965,14 @@ func buildCodexModelsManifest(
 		seen[modelID] = struct{}{}
 		descriptor := newConfiguredCodexModelDescriptor(metadataModelID)
 		descriptor.Slug = modelID
-		if imageInputModels[modelID] {
-			descriptor.InputModalities = []string{"text", "image"}
-		}
 		descriptor.SupportsSearchTool = searchToolModels[modelID]
 		if metadata, ok := modelMetadata[modelID]; ok {
 			applyUpstreamModelMetadataToCodexDescriptor(&descriptor, metadata)
+		}
+		if imageInputModels[modelID] {
+			// Apply the capability-derived modality after upstream metadata so
+			// a stale official Astra snapshot cannot downgrade the catalog.
+			descriptor.InputModalities = []string{"text", "image"}
 		}
 		if metadataModelID != modelID {
 			descriptor.DisplayName = modelID
@@ -1056,7 +1123,7 @@ func groupCodexModelSupportsImageInput(
 			return false
 		}
 	}
-	if platform != PlatformOpenAI && platform != PlatformGrok {
+	if platform != PlatformOpenAI && platform != PlatformGrok && platform != PlatformDeepseek && platform != PlatformOpenCodeGo {
 		return false
 	}
 
@@ -1195,13 +1262,23 @@ func accountCodexModelSupportsImageInput(account *Account, upstreamModel string)
 		return false
 	}
 	switch account.Platform {
-	case PlatformOpenAI:
+	case PlatformOpenAI, PlatformDeepseek, PlatformOpenCodeGo:
 		if metadata, ok := account.GetUpstreamModelMetadata(upstreamModel); ok {
 			if modalities := normalizeCodexInputModalities(metadata.InputModalities); len(modalities) > 0 {
+				// Official GPT-6 Astra metadata briefly shipped with a stale
+				// text-only modality list. Keep explicit provider metadata
+				// authoritative for compatible hosts, but repair that stale
+				// official snapshot at the capability boundary.
+				if isOpenAIGPT6AstraModel(upstreamModel) && isOfficialOpenAICodexAccount(account) {
+					return true
+				}
 				return stringSliceContains(modalities, "image")
 			}
 		}
-		if !isOpenAICodexImageInputModel(upstreamModel) {
+		if strings.EqualFold(strings.TrimSpace(upstreamModel), "deepseek-v4-flash-vision-exp") {
+			return account.Type == AccountTypeAPIKey
+		}
+		if account.Platform != PlatformOpenAI || !isOpenAICodexImageInputModel(upstreamModel) {
 			return false
 		}
 		if account.IsOpenAIOAuth() {
@@ -1224,11 +1301,22 @@ func accountCodexModelSupportsImageInput(account *Account, upstreamModel string)
 	}
 }
 
+func isOfficialOpenAICodexAccount(account *Account) bool {
+	if account == nil || account.Platform != PlatformOpenAI {
+		return false
+	}
+	if account.IsOpenAIOAuth() {
+		return true
+	}
+	return account.IsOpenAIApiKey() && isOfficialOpenAIModelsBaseURL(account.GetOpenAIBaseURL())
+}
+
 func isGrokCodexImageInputModel(model string) bool {
 	switch strings.ToLower(strings.TrimSpace(model)) {
 	case "grok-4.3",
 		"grok-4.5",
 		"grok-4.6",
+		"grok-4.7",
 		"grok-build-0.1",
 		"grok-4.20-0309-reasoning",
 		"grok-4.20-0309-non-reasoning",
@@ -1275,6 +1363,8 @@ func mergeConfiguredCodexModelsManifest(
 			selected[modelID] = struct{}{}
 		}
 	}
+	// 白名单条目匹配统一走 GroupModelAllowlist.Allows（通配条目按前缀展开）。
+	allowlist := GroupModelAllowlist{Enabled: filterBySelection, Models: selectedModels}
 	seen := make(map[string]struct{}, len(upstreamModels)+len(configuredModels))
 	merged := make([]json.RawMessage, 0, len(upstreamModels)+len(configuredModels))
 	changed := false
@@ -1295,11 +1385,9 @@ func mergeConfiguredCodexModelsManifest(
 			changed = true
 			continue
 		}
-		if filterBySelection {
-			if _, allowed := selected[descriptor.Slug]; !allowed {
-				changed = true
-				continue
-			}
+		if filterBySelection && !allowlist.Allows(descriptor.Slug) {
+			changed = true
+			continue
 		}
 		if strings.HasPrefix(descriptor.Slug, codexAutoModelPrefix) {
 			_, explicitlyEnabled := selected[descriptor.Slug]
@@ -1323,10 +1411,8 @@ func mergeConfiguredCodexModelsManifest(
 		if isCodexDedicatedMediaModel(modelID) {
 			continue
 		}
-		if filterBySelection {
-			if _, allowed := selected[modelID]; !allowed {
-				continue
-			}
+		if filterBySelection && !allowlist.Allows(modelID) {
+			continue
 		}
 		if strings.HasPrefix(modelID, codexAutoModelPrefix) {
 			if _, explicitlyEnabled := selected[modelID]; !filterBySelection || !explicitlyEnabled {
@@ -2437,12 +2523,8 @@ func validateCodexModelsManifestEnvelope(body []byte) error {
 		return errors.New("missing top-level models array")
 	}
 	models = bytes.TrimSpace(models)
-	var entries []json.RawMessage
 	if len(models) == 0 || models[0] != '[' {
 		return errors.New("top-level models field is not an array")
-	}
-	if err := json.Unmarshal(models, &entries); err != nil {
-		return fmt.Errorf("decode top-level models array: %w", err)
 	}
 	return nil
 }

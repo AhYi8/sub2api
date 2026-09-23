@@ -111,7 +111,7 @@ const (
 func (s *ScheduledTestService) UpdateGlobalPlan(ctx context.Context, plan *ScheduledTestPlan, enabled *bool) (*ScheduledTestPlan, error) {
 	existing, err := s.planRepo.GetGlobal(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("global scheduled test plan not available (migration 235 required): %w", err)
+		return nil, fmt.Errorf("global scheduled test plan not available (migration 241 required): %w", err)
 	}
 
 	nextRun, err := computeNextRun(plan.CronExpression, time.Now())

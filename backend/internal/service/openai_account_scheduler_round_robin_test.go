@@ -196,7 +196,10 @@ func TestOpenAIGatewayService_RoundRobin_DefaultStrategyKeepsSticky(t *testing.T
 	require.NoError(t, err)
 	require.NotNil(t, selection)
 	require.Equal(t, int64(36002), selection.Account.ID)
-	require.False(t, decision.StickySessionHit)
+	// 合并上游后决策标签补齐：该路径的粘性命中现在会上报 StickySessionHit=true
+	// （上游 release notes「补齐决策标签」）。粘性行为本身（选中 36002）不变，
+	// 断言由 False 改为 True 以匹配上游新契约。
+	require.True(t, decision.StickySessionHit)
 }
 
 // TestOpenAIGatewayService_RoundRobin_PlatformOverrideEnablesRotation 验证：
