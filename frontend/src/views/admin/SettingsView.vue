@@ -9805,13 +9805,13 @@ type SettingsForm = Omit<
   // 系统全局平台限额 map；form 内始终归一化为全 4 平台对象（模板非空绑定依赖此不变量）
   default_platform_quotas: DefaultPlatformQuotasMap;
   account_scheduling_thresholds: ReturnType<typeof normalizeAccountSchedulingThresholdsMap>;
-  // 平台级调度策略 map；form 内始终归一化为全 5 平台对象（模板非空绑定依赖此不变量）
+  // 平台级调度策略 map；form 内始终归一化为全平台对象（模板非空绑定依赖此不变量）
   account_scheduling_strategy_by_platform: AccountSchedulingStrategyByPlatformMap;
 };
 
 const schedulingThresholdPlatforms = SCHEDULING_THRESHOLD_PLATFORMS;
 
-// 平台级调度策略的可配置平台（与后端 AllowedSchedulingStrategyPlatforms 八平台对齐）
+// 平台级调度策略的可配置平台（与后端 AllowedSchedulingStrategyPlatforms 十平台对齐）
 const schedulingStrategyPlatforms = SCHEDULING_STRATEGY_PLATFORMS;
 
 const form = reactive<SettingsForm>({
@@ -11888,7 +11888,7 @@ async function saveSettings() {
     form.account_scheduling_thresholds = normalizeAccountSchedulingThresholdsMap(
       updated.account_scheduling_thresholds,
     );
-    // 后端返回剔除 system 后的稀疏 map；form 侧必须归一回全 5 平台对象，
+    // 后端返回剔除 system 后的稀疏 map；form 侧必须归一回全平台对象，
     // 否则未覆盖平台的 v-model 值变 undefined、下拉显示空白
     form.account_scheduling_strategy_by_platform =
       normalizeAccountSchedulingStrategyByPlatformMap(

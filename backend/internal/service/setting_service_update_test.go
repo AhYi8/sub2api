@@ -499,10 +499,12 @@ func TestSettingService_UpdateSettings_AccountSchedulingStrategyByPlatform(t *te
 				PlatformOpenAI:    AccountSchedulingStrategyRoundRobin,
 				PlatformAnthropic: AccountSchedulingStrategySystem, // system 剔除不入库
 				PlatformGrok:      AccountSchedulingStrategyDefault,
+				// 上游 v0.2.8 新增平台：白名单同步后写入侧必须接受（回归保护）
+				PlatformMiniMax: AccountSchedulingStrategyRoundRobin,
 			},
 		})
 		require.NoError(t, err)
-		require.JSONEq(t, `{"openai":"round_robin","grok":"default"}`, repo.updates[SettingKeyAccountSchedulingStrategyByPlatform])
+		require.JSONEq(t, `{"openai":"round_robin","grok":"default","minimax":"round_robin"}`, repo.updates[SettingKeyAccountSchedulingStrategyByPlatform])
 	})
 
 	t.Run("rejects unknown platform", func(t *testing.T) {

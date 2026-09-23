@@ -1107,7 +1107,9 @@ const (
 
 // CheckAPIKeysDuplicateRequest 创建账号前的 API Key 查重请求。
 type CheckAPIKeysDuplicateRequest struct {
-	Platform string   `json:"platform" binding:"required,oneof=anthropic openai gemini antigravity grok kimi zhipu deepseek"`
+	// 平台枚举覆盖全部 API Key 凭证平台：上游 v0.2.8 新增 minimax/opencode_go，
+	// 缺失会被前端查重 fail-closed 逻辑放大为无法创建这两类账号。
+	Platform string   `json:"platform" binding:"required,oneof=anthropic openai gemini antigravity grok kimi zhipu deepseek minimax opencode_go"`
 	APIKeys  []string `json:"api_keys" binding:"required,min=1,dive,required"`
 }
 

@@ -72,9 +72,10 @@ export function normalizeAccountSchedulingThresholdsMap(
 export type AccountSchedulingStrategyOverride = "system" | "default" | "round_robin"
 
 /**
- * 平台级调度策略的可配置平台（与后端 AllowedSchedulingStrategyPlatforms 八平台
+ * 平台级调度策略的可配置平台（与后端 AllowedSchedulingStrategyPlatforms 十平台
  * 严格对齐：Claude 通用链 / OpenAI 兼容链实际可能调度的全部平台，含
- * kimi/zhipu/deepseek——它们经归一化与 composite 展开后以原平台键参与调度）。
+ * kimi/zhipu/deepseek——它们经归一化与 composite 展开后以原平台键参与调度；
+ * 上游 v0.2.8 新增的 minimax/opencode_go 同样经 OpenAI 兼容链调度）。
  */
 export type SchedulingStrategyPlatformType =
   | "anthropic"
@@ -85,6 +86,8 @@ export type SchedulingStrategyPlatformType =
   | "kimi"
   | "zhipu"
   | "deepseek"
+  | "minimax"
+  | "opencode_go"
 
 export const SCHEDULING_STRATEGY_PLATFORMS: SchedulingStrategyPlatformType[] = [
   "anthropic",
@@ -95,9 +98,11 @@ export const SCHEDULING_STRATEGY_PLATFORMS: SchedulingStrategyPlatformType[] = [
   "kimi",
   "zhipu",
   "deepseek",
+  "minimax",
+  "opencode_go",
 ]
 
-/** 平台级调度策略 map（form 内始终归一化为全 8 平台对象，模板非空绑定依赖此不变量） */
+/** 平台级调度策略 map（form 内始终归一化为全平台对象，模板非空绑定依赖此不变量） */
 export type AccountSchedulingStrategyByPlatformMap = Record<
   SchedulingStrategyPlatformType,
   AccountSchedulingStrategyOverride

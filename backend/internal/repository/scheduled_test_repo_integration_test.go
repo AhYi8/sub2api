@@ -91,7 +91,7 @@ func TestScheduledTestClaimForRun_AtomicExclusive(t *testing.T) {
 	require.False(t, claimed, "claim on disabled plan must fail")
 }
 
-// TestScheduledTestRepo_GlobalPlanUniqueness 验证迁移 235 的部分唯一索引：
+// TestScheduledTestRepo_GlobalPlanUniqueness 验证迁移 241 的部分唯一索引：
 // 数据库层面阻止出现第二条全局计划行。
 func TestScheduledTestRepo_GlobalPlanUniqueness(t *testing.T) {
 	ctx := context.Background()
@@ -174,7 +174,7 @@ func TestScheduledTestRepo_ListByAccountMarksGlobal(t *testing.T) {
 	require.True(t, byPlan[globalID.ID], "global plan result should be marked global")
 }
 
-// TestScheduledTestRepo_AccountDeleteKeepsGlobalResults 验证迁移 235 的
+// TestScheduledTestRepo_AccountDeleteKeepsGlobalResults 验证迁移 241 的
 // ON DELETE SET NULL：删除账号后全局测试历史保留、仅解除关联。
 func TestScheduledTestRepo_AccountDeleteKeepsGlobalResults(t *testing.T) {
 	f := newScheduledTestRepoFixture(t)

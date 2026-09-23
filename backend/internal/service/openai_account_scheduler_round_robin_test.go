@@ -148,6 +148,35 @@ func TestOpenAIGatewayService_RoundRobin_AdvancedSchedulerSelectionOrderRotates(
 	require.Equal(t, int64(36002), second.Account.ID)
 }
 
+// TestOpenAIGatewayService_RoundRobin_LoadBalanceDoesNotWriteStickyBinding 验证：
+// 高级调度器 load_balance 层在严格轮询模式下不写 session 粘性绑定
+// （与 previous_response 层及 legacy 路径的门控同口径；该上游写入点曾漏配门控，
+// RR 期间每次选中都会覆盖绑定，导致切回默认策略后会话粘到最后一次轮询账号）。
+func TestOpenAIGatewayService_RoundRobin_LoadBalanceDoesNotWriteStickyBinding(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	groupID := int64(20110)
+	cfg := newSchedulerTestSubscriptionPriorityConfig()
+	svc, cache := newRoundRobinTestOpenAIService(t, cfg, roundRobinTestAccounts(groupID, 36001, 36002), map[string]string{
+		openAIAdvancedSchedulerSettingKey:   "true",
+		SettingKeyAccountSchedulingStrategy: AccountSchedulingStrategyRoundRobin,
+	})
+	ctx := context.Background()
+	require.True(t, svc.isOpenAIAdvancedSchedulerEnabled(ctx))
+
+	// 无 previous_response 的普通请求：经 load_balance 层轮询选中
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx, &groupID, "", "sess-lb-rr", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+
+	// 选中后不得写入 session 粘性绑定
+	require.NotContains(t, cache.sessionBindings, "openai:sess-lb-rr")
+}
+
 // TestOpenAIGatewayService_RoundRobin_PreviousResponseStillSticky 验证：
 // 严格轮询不影响 previous_response_id 硬粘层（上游会话状态绑定账号，必须保留）。
 func TestOpenAIGatewayService_RoundRobin_PreviousResponseStillSticky(t *testing.T) {

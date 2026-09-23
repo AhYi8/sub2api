@@ -115,7 +115,7 @@ func TestSettingService_GetAccountSchedulingStrategyForPlatform(t *testing.T) {
 	gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{expiresAt: 0})
 	svc := NewSettingService(&openAIAdvancedSchedulerSettingRepoStub{values: map[string]string{
 		SettingKeyAccountSchedulingStrategy:           AccountSchedulingStrategyRoundRobin,
-		SettingKeyAccountSchedulingStrategyByPlatform: `{"openai":"default","grok":"round_robin","anthropic":"system","mystery":"round_robin"}`,
+		SettingKeyAccountSchedulingStrategyByPlatform: `{"openai":"default","grok":"round_robin","anthropic":"system","minimax":"default","mystery":"round_robin"}`,
 	}}, nil)
 
 	if got := svc.GetAccountSchedulingStrategyForPlatform(ctx, PlatformOpenAI); got != AccountSchedulingStrategyDefault {
@@ -137,6 +137,14 @@ func TestSettingService_GetAccountSchedulingStrategyForPlatform(t *testing.T) {
 	// antigravity（/antigravity 强制平台路由）同样可继承
 	if got := svc.GetAccountSchedulingStrategyForPlatform(ctx, PlatformAntigravity); got != AccountSchedulingStrategyRoundRobin {
 		t.Fatalf("antigravity 未配置应继承系统级 round_robin，got %q", got)
+	}
+	// 上游 v0.2.8 新增的 minimax/opencode_go 经 OpenAI 兼容链调度，白名单同步后
+	// 平台级覆盖与继承均应生效（曾因白名单未同步而静默退化为系统级）
+	if got := svc.GetAccountSchedulingStrategyForPlatform(ctx, PlatformMiniMax); got != AccountSchedulingStrategyDefault {
+		t.Fatalf("minimax 平台覆盖 default 应生效，got %q", got)
+	}
+	if got := svc.GetAccountSchedulingStrategyForPlatform(ctx, PlatformOpenCodeGo); got != AccountSchedulingStrategyRoundRobin {
+		t.Fatalf("opencode_go 未配置应继承系统级 round_robin，got %q", got)
 	}
 	// 未知平台键被剔除，同样走继承
 	if got := svc.GetAccountSchedulingStrategyForPlatform(ctx, "mystery"); got != AccountSchedulingStrategyRoundRobin {

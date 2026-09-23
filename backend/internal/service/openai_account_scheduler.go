@@ -1266,7 +1266,10 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithBudget
 				continue
 			}
 		}
-		if req.SessionHash != "" && !req.PreserveStickyBinding {
+		// 严格轮询模式下不写 session 粘性绑定（与 previous_response 层及 legacy
+		// 路径的门控同口径）：RR 期间每次选中都会覆盖绑定，切回默认策略后会话
+		// 会粘到 RR 期间最后一次轮询选中的账号，违背「既有绑定原样保留」承诺。
+		if req.SessionHash != "" && !req.PreserveStickyBinding && !req.RoundRobin {
 			_ = s.service.bindOpenAIStickySessionDuringSelection(ctx, req.GroupID, req.SessionHash, fresh.ID)
 		}
 		return attachSelectionProfitGate(ctx, &AccountSelectionResult{
@@ -2319,7 +2322,12 @@ func (s *OpenAIGatewayService) selectLegacyAccountByPreviousResponse(
 		return nil, false, nil
 	}
 	if sessionHash != "" {
-		_ = s.bindOpenAIStickySessionDuringSelection(ctx, groupID, sessionHash, account.ID)
+		// 严格轮询模式下不写 session 粘性绑定（与高级调度路径的 !req.RoundRobin
+		// 门控对齐，见 openai_gateway_scheduling.go 的不变量说明）。previous_response
+		// 硬粘命中本身不受影响——上游会话状态绑定账号，必须保留。
+		if !s.accountSchedulingRoundRobinEnabled(ctx, platform) {
+			_ = s.bindOpenAIStickySessionDuringSelection(ctx, groupID, sessionHash, account.ID)
+		}
 	}
 	return selection, true, nil
 }

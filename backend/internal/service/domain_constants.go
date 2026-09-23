@@ -138,8 +138,9 @@ var AllowedQuotaPlatforms = []string{
 }
 
 // AllowedSchedulingThresholdPlatforms 是允许设置账号自动停调阈值的平台列表。
-// openai/anthropic/grok 有原生用量窗口；kimi/zhipu/minimax 的 Coding Plan 同样暴露
-// 5h/weekly 滚动窗口，纳入阈值评估。deepseek 为余额型，走余额检测而非阈值。
+// openai/anthropic/grok 有原生用量窗口；kimi/zhipu/minimax/opencode_go 的
+// Coding Plan 同样暴露 5h/weekly 滚动窗口，纳入阈值评估。deepseek 为余额型，
+// 走余额检测而非阈值；gemini/antigravity 无用量窗口，不参与阈值评估。
 var AllowedSchedulingThresholdPlatforms = []string{
 	PlatformOpenAI,
 	PlatformAnthropic,
@@ -153,7 +154,8 @@ var AllowedSchedulingThresholdPlatforms = []string{
 // AllowedSchedulingStrategyPlatforms 是允许配置平台级调度策略的平台列表：
 // 与各调度决策点传入的已归一化平台键严格对齐（Claude 通用链 / OpenAI 兼容链 /
 // Gemini 兼容链实际可能调度的全部平台，含 kimi/zhipu/deepseek 分组——它们经
-// NormalizeOpenAICompatiblePlatform 与 composite 展开后以原平台键参与调度）。
+// NormalizeOpenAICompatiblePlatform 与 composite 展开后以原平台键参与调度；
+// 上游 v0.2.8 新增的 minimax/opencode_go 同样经 OpenAI 兼容链调度，需一并纳入）。
 var AllowedSchedulingStrategyPlatforms = []string{
 	PlatformAnthropic,
 	PlatformOpenAI,
@@ -163,6 +165,8 @@ var AllowedSchedulingStrategyPlatforms = []string{
 	PlatformKimi,
 	PlatformZhipu,
 	PlatformDeepseek,
+	PlatformMiniMax,
+	PlatformOpenCodeGo,
 }
 
 // IsAllowedSchedulingStrategyPlatform 报告 platform 是否为合法的平台级调度策略键。

@@ -1497,7 +1497,7 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(byPlatform.anthropic).toBe("default");
     expect(byPlatform.grok).toBe("system");
 
-    // 保存成功后：稀疏响应必须被归一回全 5 平台对象，未覆盖平台的下拉不得变空白
+    // 保存成功后：稀疏响应必须被归一回全平台对象，未覆盖平台的下拉不得变空白
     expect((anthropicSelect.element as HTMLSelectElement).value).toBe("default");
     expect((openaiSelect.element as HTMLSelectElement).value).toBe("system");
     expect((wrapper.get('[data-testid="account-scheduling-strategy-grok"]').element as HTMLSelectElement).value).toBe("system");

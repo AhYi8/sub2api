@@ -82,6 +82,19 @@ func TestCheckAPIKeysDuplicateRejectsInvalidPlatform(t *testing.T) {
 	require.False(t, svc.called)
 }
 
+// 上游 v0.2.8 新增的 minimax/opencode_go 同为 API Key 凭证平台，创建弹窗会对其
+// 发起查重；平台枚举若缺失会被前端 fail-closed 逻辑放大为无法建号（回归保护）。
+func TestCheckAPIKeysDuplicateAcceptsUpstreamCNPlatforms(t *testing.T) {
+	for _, platform := range []string{"minimax", "opencode_go"} {
+		svc := &checkAPIKeysAdminServiceStub{}
+		rec := postCheckAPIKeys(setupCheckAPIKeysRouter(svc), `{"platform":"`+platform+`","api_keys":["key-a"]}`)
+
+		require.Equal(t, http.StatusOK, rec.Code, "平台 %s 应通过枚举校验", platform)
+		require.True(t, svc.called, "平台 %s 应到达 service 层", platform)
+		require.Equal(t, platform, svc.platform)
+	}
+}
+
 func TestCheckAPIKeysDuplicateRejectsEmptyKeys(t *testing.T) {
 	svc := &checkAPIKeysAdminServiceStub{}
 	rec := postCheckAPIKeys(setupCheckAPIKeysRouter(svc), `{"platform":"zhipu","api_keys":[]}`)

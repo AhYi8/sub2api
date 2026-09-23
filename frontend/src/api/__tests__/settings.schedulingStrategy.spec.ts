@@ -5,9 +5,16 @@ import {
   SCHEDULING_STRATEGY_PLATFORMS,
 } from "../admin/settings";
 
-// 平台级调度策略 map 的归一化不变量：form 侧依赖「全 8 平台对象 + 三值枚举」，
+// 平台级调度策略 map 的归一化不变量：form 侧依赖「全平台对象 + 三值枚举」，
 // 这里锁定缺省补全与非法值容错两条防御分支。
 describe("normalizeAccountSchedulingStrategyByPlatformMap", () => {
+  // 上游 v0.2.8 新增的 minimax/opencode_go 必须在白名单内（与后端
+  // AllowedSchedulingStrategyPlatforms 同步，缺失会导致平台级覆盖无法配置）。
+  it("平台白名单包含上游新增的 minimax/opencode_go", () => {
+    expect(SCHEDULING_STRATEGY_PLATFORMS).toContain("minimax");
+    expect(SCHEDULING_STRATEGY_PLATFORMS).toContain("opencode_go");
+  });
+
   it("为全部平台补全缺省值 system", () => {
     const result = normalizeAccountSchedulingStrategyByPlatformMap();
     expect(Object.keys(result).sort()).toEqual([...SCHEDULING_STRATEGY_PLATFORMS].sort());
