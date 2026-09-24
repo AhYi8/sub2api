@@ -1123,15 +1123,45 @@
           <p class="input-hint">{{ t('admin.accounts.upstream.baseUrlHint') }}</p>
         </div>
         <div>
-          <label class="input-label">{{ t('admin.accounts.upstream.apiKey') }}</label>
-          <input
+          <label class="input-label">
+            {{ t('admin.accounts.upstream.apiKey') }}
+            <span
+              v-if="parsedUpstreamApiKeys.length > 1"
+              class="ml-1 rounded-full bg-blue-500 px-2 py-0.5 text-xs text-white"
+            >
+              {{ t('admin.accounts.oauth.keysCount', { count: parsedUpstreamApiKeys.length }) }}
+            </span>
+          </label>
+          <!-- 一行一条 API Key，多条时批量创建账号并自动加序号 -->
+          <textarea
             v-model="upstreamApiKey"
-            type="password"
+            rows="3"
             required
-            class="input font-mono"
+            class="input resize-y font-mono"
             placeholder="sk-..."
-          />
+            data-testid="antigravity-upstream-api-keys-input"
+          ></textarea>
           <p class="input-hint">{{ t('admin.accounts.upstream.apiKeyHint') }}</p>
+          <p class="input-hint">{{ t('admin.accounts.apiKeyBatchHint') }}</p>
+          <p
+            v-if="parsedUpstreamApiKeys.length > 1"
+            class="input-hint text-blue-600 dark:text-blue-400"
+          >
+            {{ t('admin.accounts.oauth.batchCreateAccounts', { count: parsedUpstreamApiKeys.length }) }}
+          </p>
+          <!-- 批量创建部分失败时的错误列表与查重跳过明细（markup 与通用 apikey 区块保持一致） -->
+          <div
+            v-if="apiKeyBatchError"
+            class="rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-700 dark:bg-red-900/30"
+          >
+            <p class="whitespace-pre-line text-sm text-red-600 dark:text-red-400">{{ apiKeyBatchError }}</p>
+          </div>
+          <div
+            v-if="apiKeyBatchSkipped"
+            class="rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-700 dark:bg-amber-900/30"
+          >
+            <p class="whitespace-pre-line text-sm text-amber-700 dark:text-amber-400">{{ apiKeyBatchSkipped }}</p>
+          </div>
         </div>
         <!-- 上游倍率自动探测：antigravity upstream 也是 API-key 账号 -->
         <div class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600">
@@ -1357,8 +1387,9 @@
         </div>
       </div>
 
-      <!-- API Key input (only for apikey type, excluding Antigravity which has its own fields) -->
-      <div v-if="form.type === 'apikey' && form.platform !== 'antigravity'" class="space-y-4">
+      <!-- 通用 API Key 输入（apikey 类型且支持多行批量输入的平台；antigravity 的 apikey 是
+           upstream 专属字段，在该区块单独渲染，因此不在 supportsMultiLineApiKeyInput 集合内） -->
+      <div v-if="form.type === 'apikey' && supportsMultiLineApiKeyInput(form.platform)" class="space-y-4">
         <div v-if="!isMultiProtocolPlatform || apiProtocol !== 'adaptive'">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
@@ -1411,34 +1442,27 @@
           <label class="input-label">
             {{ t('admin.accounts.apiKeyRequired') }}
             <span
-              v-if="isCNPlatform && parsedApiKeyCount > 1"
+              v-if="parsedApiKeyCount > 1"
               class="ml-1 rounded-full bg-blue-500 px-2 py-0.5 text-xs text-white"
             >
               {{ t('admin.accounts.oauth.keysCount', { count: parsedApiKeyCount }) }}
             </span>
           </label>
-          <!-- 国产平台：一行一条 API Key，多条时批量创建账号并自动加序号 -->
+          <!-- 全部 apikey 平台：一行一条 API Key，多条时批量创建账号并自动加序号。
+               区块外层已用 supportsMultiLineApiKeyInput 限定平台集合，输入框与批量提示
+               的一致性由该谓词单点保证；未来新增平台时同步更新谓词即可 -->
           <textarea
-            v-if="isCNPlatform"
             v-model="apiKeyValue"
             rows="3"
             required
             class="input resize-y font-mono"
             :placeholder="apiKeyValuePlaceholder"
-            data-testid="cn-api-keys-input"
+            data-testid="api-keys-input"
           ></textarea>
-          <input
-            v-else
-            v-model="apiKeyValue"
-            type="password"
-            required
-            class="input font-mono"
-            :placeholder="apiKeyValuePlaceholder"
-          />
           <p v-if="apiKeyHint" class="input-hint">{{ apiKeyHint }}</p>
-          <p v-if="isCNPlatform" class="input-hint">{{ t('admin.accounts.cnProviders.apiKeyBatchHint') }}</p>
+          <p class="input-hint">{{ t('admin.accounts.apiKeyBatchHint') }}</p>
           <p
-            v-if="isCNPlatform && parsedApiKeyCount > 1"
+            v-if="parsedApiKeyCount > 1"
             class="input-hint text-blue-600 dark:text-blue-400"
           >
             {{ t('admin.accounts.oauth.batchCreateAccounts', { count: parsedApiKeyCount }) }}
@@ -3993,6 +4017,7 @@ import {
   defaultOpenCodeProtocolRules,
   isCNProviderPlatform,
   isHeaderOverrideCapable,
+  supportsMultiLineApiKeyInput,
   validateHeaderOverrideRows,
   type CnAccountMode,
   type CnApiProtocol,
@@ -4192,13 +4217,13 @@ const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_acco
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
-// 国产平台多行批量输入：一行一条 API Key，trim 后过滤空行并去重（保持首次出现顺序）。
+// 多行密钥批量输入的统一解析：一行一条 API Key，trim 后过滤空行并去重（保持首次出现顺序）。
 // 与 Grok RT 批量先例一致的拆分方式；去重避免同一密钥重复建号。
 // 查重与批量创建流程一致不限制条数，仅由后端限制单条密钥长度与请求体大小。
-const parsedApiKeys = computed(() => {
+function parseApiKeyLines(text: string): string[] {
   const seen = new Set<string>()
   const keys: string[] = []
-  for (const line of apiKeyValue.value.split('\n')) {
+  for (const line of text.split('\n')) {
     const key = line.trim()
     if (key && !seen.has(key)) {
       seen.add(key)
@@ -4206,7 +4231,9 @@ const parsedApiKeys = computed(() => {
     }
   }
   return keys
-})
+}
+
+const parsedApiKeys = computed(() => parseApiKeyLines(apiKeyValue.value))
 const parsedApiKeyCount = computed(() => parsedApiKeys.value.length)
 // 批量创建部分失败时的错误列表文案（保留弹窗展示，重新提交时清空）
 const apiKeyBatchError = ref('')
@@ -4411,8 +4438,8 @@ const syncPreviewCredentials = computed(() => {
     platform: form.platform,
     type: form.type,
     base_url: baseUrl || undefined,
-    // 国产平台多行批量输入时，预览凭据只取第一条有效密钥（整段多行文本无法用于鉴权）
-    api_key: isCNPlatform.value ? (parsedApiKeys.value[0] ?? '') : apiKeyValue.value,
+    // 多行批量输入时，预览凭据只取第一条有效密钥（整段多行文本无法用于鉴权）
+    api_key: parsedApiKeys.value[0] ?? '',
     ...(modelMapping ? { model_mapping: modelMapping } : {})
   }
 })
@@ -4547,7 +4574,9 @@ const allowOverages = ref(false) // For antigravity accounts: enable AI Credits 
 const antigravityAccountType = ref<'oauth' | 'upstream'>('oauth') // For antigravity: oauth or upstream
 const antigravityProjectId = ref('')
 const upstreamBaseUrl = ref('') // For upstream type: base URL
-const upstreamApiKey = ref('') // For upstream type: API key
+const upstreamApiKey = ref('') // For upstream type: API key（多行批量输入，一行一条）
+// 解析规则与通用 apikey 输入共用 parseApiKeyLines（trim、过滤空行、去重保序）
+const parsedUpstreamApiKeys = computed(() => parseApiKeyLines(upstreamApiKey.value))
 const antigravityModelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
 const antigravityWhitelistModels = ref<string[]>([])
 const antigravityModelMappings = ref<ModelMapping[]>([])
@@ -5004,6 +5033,14 @@ watch(
   }
 )
 
+// antigravity 内 OAuth↔Upstream 切换不改平台、只改类型，同样要清空批量错误与
+// 跳过提示（含旧密钥掩码）并使进行中的 apikey 提交失效，与切平台的防护语义一致
+watch(antigravityAccountType, () => {
+  apiKeyBatchError.value = ''
+  apiKeyBatchSkipped.value = ''
+  invalidateApiKeySubmission()
+})
+
 // Gemini AI Studio OAuth availability (requires operator-configured OAuth client)
 watch(
   [accountCategory, () => form.platform],
@@ -5362,9 +5399,67 @@ const createAccountSilently = async (
   }
 }
 
-// 国产平台多行 API Key 批量创建：逐条静默创建并统计成败。
+// 创建前查重（通用 apikey 路径与 antigravity upstream 批量共用）：
+// 与同平台已有账号凭据比对，避免重复建号（单条命中即阻止，批量跳过重复行）。
+// 查重服务不可用时阻止提交——防重复建号是本流程的核心意图，宁可让用户重试。
+// 竞态防护：查重的 await 窗口内用户可能切换平台或关闭弹窗——以提交序号 + 平台快照
+// 校验，失效即静默放弃，绝不按变化后的表单状态创建。
+// 返回 null 表示流程已终止（错误已提示或结果作废），调用方直接 return。
+const dedupeApiKeysAgainstExisting = async (
+  platform: AccountPlatform,
+  apiKeys: string[]
+): Promise<string[] | null> => {
+  let keysToCreate = apiKeys
+  submitting.value = true
+  const submissionId = ++apiKeySubmissionSeq
+  try {
+    const checkResult = await adminAPI.accounts.checkAPIKeysDuplicate(platform, apiKeys)
+    if (submissionId !== apiKeySubmissionSeq || !props.show || form.platform !== platform) {
+      // 查重期间已切换平台 / 关闭弹窗 / 发起新提交：本次结果作废
+      return null
+    }
+    const duplicates = checkResult.duplicates || []
+    if (duplicates.length > 0) {
+      const duplicateKeys = new Set(duplicates.map((hit) => hit.api_key))
+      if (apiKeys.length === 1) {
+        appStore.showError(t('admin.accounts.duplicateCheck.apiKeyExists', { name: duplicates[0].account_name }))
+        return null
+      }
+      apiKeyBatchSkipped.value = [
+        t('admin.accounts.duplicateCheck.skippedKeys', { count: duplicates.length }),
+        ...duplicates.map((hit) => `${maskAPIKey(hit.api_key)}（${hit.account_name}）`)
+      ].join('\n')
+      keysToCreate = apiKeys.filter((key) => !duplicateKeys.has(key))
+      if (keysToCreate.length === 0) {
+        appStore.showError(t('admin.accounts.duplicateCheck.allKeysExist'))
+        return null
+      }
+    }
+    return keysToCreate
+  } catch (err: any) {
+    // 仅记录不含请求体的概要信息——Axios 错误对象的 config.data 携带 API Key 明文，
+    // 整体输出会把密钥泄露到浏览器控制台与日志采集。
+    // apiClient 拦截器 reject 的是平铺错误对象（{ status, message, ... }），非 axios 原生错误
+    const status = err?.status
+    console.error('check api keys duplicate failed', status ? `status=${status}` : 'no response')
+    // 400 是请求参数被后端拒绝（单条密钥超长、请求体超限等输入问题），
+    // 与网络/5xx 的"服务不可用"区分开，避免误导排障方向
+    if (status === 400) {
+      appStore.showError(t('admin.accounts.duplicateCheck.apiKeyCheckRejected'))
+    } else {
+      appStore.showError(t('admin.accounts.duplicateCheck.apiKeyCheckFailed'))
+    }
+    return null
+  } finally {
+    // 创建路径（doCreateAccount / submitApiKeyBatch）内部各自管理 submitting，
+    // 此处恢复的是查重占用的加载态；同步代码链内立即重新置位，无 UI 重入间隙
+    submitting.value = false
+  }
+}
+
+// 全部 apikey 平台的多行 API Key 批量创建：逐条静默创建并统计成败。
 // 全部成功：提示并关闭弹窗；部分成功：保留弹窗与输入，展示逐条错误便于修正重试（与 Grok RT 批量一致）。
-const submitCNApiKeyBatch = async (payloads: CreateAccountRequest[]) => {
+const submitApiKeyBatch = async (payloads: CreateAccountRequest[]) => {
   submitting.value = true
   apiKeyBatchError.value = ''
   try {
@@ -5840,8 +5935,12 @@ const handleSubmit = async () => {
     return
   }
 
-  // For Antigravity upstream type, create directly
+  // antigravity upstream 类型（多行批量：一行一条 API Key，单条行为与既有路径一致）
   if (form.platform === 'antigravity' && antigravityAccountType.value === 'upstream') {
+    // 防重入：与通用 apikey 分支一致，异步窗口内的重复提交直接忽略，防止重复建号
+    if (submitting.value) {
+      return
+    }
     if (!form.name.trim()) {
       appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
       return
@@ -5850,15 +5949,18 @@ const handleSubmit = async () => {
       appStore.showError(t('admin.accounts.upstream.pleaseEnterBaseUrl'))
       return
     }
-    if (!upstreamApiKey.value.trim()) {
+    const upstreamKeys = parsedUpstreamApiKeys.value
+    if (upstreamKeys.length === 0) {
       appStore.showError(t('admin.accounts.upstream.pleaseEnterApiKey'))
       return
     }
+    // 类型快照：查重 await 窗口内用户可能把账号类型切到 OAuth——切走后本次提交作废，
+    // 避免按变化后的表单状态创建（与切平台的竞态防护语义一致）
+    const accountTypeSnapshot = antigravityAccountType.value
 
-    // Build upstream credentials (and optional model restriction)
+    // 构造共享凭据（含可选模型限制、请求头拦截、临时不可调度规则），api_key 逐条写入
     const credentials: Record<string, unknown> = {
-      base_url: upstreamBaseUrl.value.trim(),
-      api_key: upstreamApiKey.value.trim()
+      base_url: upstreamBaseUrl.value.trim()
     }
 
     // Antigravity 只使用映射模式
@@ -5872,9 +5974,57 @@ const handleSubmit = async () => {
     }
 
     applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
-
+    // 临时不可调度规则与通用 apikey 路径一致写入凭据（后续逐条 payload 继承）
+    if (!applyTempUnschedConfig(credentials)) {
+      return
+    }
     const extra = buildAntigravityExtra()
-    await createAccountAndFinish(form.platform, 'apikey', credentials, extra)
+
+    // 创建前查重：与通用 apikey 路径一致（单条命中即阻止，多条跳过重复行）
+    apiKeyBatchError.value = ''
+    apiKeyBatchSkipped.value = ''
+    const keysToCreate = await dedupeApiKeysAgainstExisting('antigravity', upstreamKeys)
+    if (keysToCreate === null) {
+      return
+    }
+    if (antigravityAccountType.value !== accountTypeSnapshot) {
+      // 查重期间账号类型被切换（OAuth↔Upstream）：本次结果作废
+      return
+    }
+
+    // submitting 占位封住 mixed-channel 检查 await 窗口（dedupe 的 finally 已恢复 false），
+    // 否则该窗口内提交按钮恢复可点，并发第二次提交会造成每条密钥重复建号；
+    // 弹框打开等待用户确认时 finally 恢复 false，确认回调内部自行接管加载态
+    submitting.value = true
+    try {
+      // 单条：与既有路径完全一致（createAccountAndFinish 内部处理 mixed-channel 检查、配额注入与提示）
+      if (upstreamKeys.length === 1) {
+        await createAccountAndFinish(form.platform, 'apikey', { ...credentials, api_key: keysToCreate[0] }, extra)
+        return
+      }
+
+      // 多条批量：mixed-channel 风险基于 platform × group_ids，与具体密钥无关——
+      // 提交前只检查/确认一次，确认后由 withAntigravityConfirmFlag 给逐条创建附加确认标志。
+      // payload 显式 type:'apikey'（不依赖 ...form 惰性求值，防查重窗口内类型切换导致错配）；
+      // extra 复用配额注入 helper，保证单条与批量的配额生效一致
+      const runBatch = () => submitApiKeyBatch(keysToCreate.map((apiKey, index) => ({
+        ...form,
+        type: 'apikey' as AccountType,
+        name: `${form.name} #${index + 1}`,
+        credentials: { ...credentials, api_key: apiKey },
+        group_ids: form.group_ids,
+        extra: applyQuotaExtra('apikey', withUpstreamRequestIdHeader(extra)),
+        upstream_billing_probe_enabled: upstreamBillingAutoProbeEnabled.value,
+        auto_pause_on_expired: autoPauseOnExpired.value
+      })))
+      const canContinue = await ensureAntigravityMixedChannelConfirmed(runBatch)
+      if (!canContinue) {
+        return
+      }
+      await runBatch()
+    } finally {
+      submitting.value = false
+    }
     return
   }
 
@@ -5911,8 +6061,8 @@ const handleSubmit = async () => {
   // 全部重复），都不应残留旧的错误列表或跳过明细（其中含旧密钥的掩码信息）
   apiKeyBatchError.value = ''
   apiKeyBatchSkipped.value = ''
-  // 国产平台（kimi/zhipu/deepseek）为多行批量输入：一行一条密钥；其余平台维持单值输入
-  const apiKeys = isCNPlatform.value ? parsedApiKeys.value : [apiKeyValue.value.trim()]
+  // 全部 apikey 平台为多行批量输入：一行一条密钥，parsedApiKeys 已去重去空行
+  const apiKeys = parsedApiKeys.value
   if (apiKeys.length === 0 || !apiKeys[0]) {
     appStore.showError(t('admin.accounts.pleaseEnterApiKey'))
     return
@@ -6025,61 +6175,16 @@ const handleSubmit = async () => {
 
   // 创建前查重：与同平台已有账号凭据比对，避免重复建号（单条命中即阻止，批量跳过重复行）。
   // 放在全部本地校验（header override、临时不可调度规则）之后，避免本地配置非法时
-  // 也发起一次无谓的查重网络请求。查重服务不可用时阻止提交——防重复建号是本流程的
-  // 核心意图，宁可让用户重试。
-  // 竞态防护：查重的 await 窗口内用户可能切换平台或关闭弹窗——以提交序号 + 平台快照
-  // 校验，失效即静默放弃，绝不按变化后的表单状态创建。
-  let keysToCreate = apiKeys
-  submitting.value = true
-  const submissionId = ++apiKeySubmissionSeq
-  const platformSnapshot = form.platform
-  try {
-    const checkResult = await adminAPI.accounts.checkAPIKeysDuplicate(platformSnapshot, apiKeys)
-    if (submissionId !== apiKeySubmissionSeq || !props.show || form.platform !== platformSnapshot) {
-      // 查重期间已切换平台 / 关闭弹窗 / 发起新提交：本次结果作废
-      return
-    }
-    const duplicates = checkResult.duplicates || []
-    if (duplicates.length > 0) {
-      const duplicateKeys = new Set(duplicates.map((hit) => hit.api_key))
-      if (apiKeys.length === 1) {
-        appStore.showError(t('admin.accounts.duplicateCheck.apiKeyExists', { name: duplicates[0].account_name }))
-        return
-      }
-      apiKeyBatchSkipped.value = [
-        t('admin.accounts.duplicateCheck.skippedKeys', { count: duplicates.length }),
-        ...duplicates.map((hit) => `${maskAPIKey(hit.api_key)}（${hit.account_name}）`)
-      ].join('\n')
-      keysToCreate = apiKeys.filter((key) => !duplicateKeys.has(key))
-      if (keysToCreate.length === 0) {
-        appStore.showError(t('admin.accounts.duplicateCheck.allKeysExist'))
-        return
-      }
-    }
-  } catch (err: any) {
-    // 仅记录不含请求体的概要信息——Axios 错误对象的 config.data 携带 API Key 明文，
-    // 整体输出会把密钥泄露到浏览器控制台与日志采集。
-    // apiClient 拦截器 reject 的是平铺错误对象（{ status, message, ... }），非 axios 原生错误
-    const status = err?.status
-    console.error('check api keys duplicate failed', status ? `status=${status}` : 'no response')
-    // 400 是请求参数被后端拒绝（单条密钥超长、请求体超限等输入问题），
-    // 与网络/5xx 的"服务不可用"区分开，避免误导排障方向
-    if (status === 400) {
-      appStore.showError(t('admin.accounts.duplicateCheck.apiKeyCheckRejected'))
-    } else {
-      appStore.showError(t('admin.accounts.duplicateCheck.apiKeyCheckFailed'))
-    }
+  // 也发起一次无谓的查重网络请求。查重失败/竞态失效返回 null，本次提交终止。
+  const keysToCreate = await dedupeApiKeysAgainstExisting(form.platform, apiKeys)
+  if (keysToCreate === null) {
     return
-  } finally {
-    // 创建路径（doCreateAccount / submitCNApiKeyBatch）内部各自管理 submitting，
-    // 此处恢复的是查重占用的加载态；同步代码链内立即重新置位，无 UI 重入间隙
-    submitting.value = false
   }
 
   form.credentials = credentials
   const extra = buildAnthropicExtra(buildOpenAIExtra())
 
-  // 单条：与既有路径完全一致；批量（仅国产平台可达）：逐条创建并按「名称 #序号」命名。
+  // 单条：与既有路径完全一致；多条：逐条创建并按「名称 #序号」命名。
   // 以原始输入条数判断：批量输入即使查重后仅剩一条，也保持批量语义（名称 #1 + 批量提示）
   const buildApiKeyPayload = (apiKey: string, name?: string): CreateAccountRequest => ({
     ...form,
@@ -6096,7 +6201,7 @@ const handleSubmit = async () => {
     return
   }
 
-  await submitCNApiKeyBatch(keysToCreate.map((apiKey, index) => buildApiKeyPayload(apiKey, `${form.name} #${index + 1}`)))
+  await submitApiKeyBatch(keysToCreate.map((apiKey, index) => buildApiKeyPayload(apiKey, `${form.name} #${index + 1}`)))
 }
 
 const goBackToBasicInfo = () => {
@@ -6145,6 +6250,48 @@ const handleValidateSessionToken = (_sessionToken: string) => {
 const formatDateTimeLocal = formatDateTimeLocalInput
 const parseDateTimeLocal = parseDateTimeLocalInput
 
+// 注入配额限制配置（apikey/bedrock 账号）：限额、重置模式与通知配置写入 extra。
+// 单条路径（createAccountAndFinish）与 antigravity upstream 批量路径共用，
+// 保证同一表单填写的配额在单条与批量创建下生效一致。
+// 无任何配额配置时原样返回（可能是 undefined），不产生空对象。
+const applyQuotaExtra = (
+  type: AccountType,
+  extra: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined => {
+  if (type !== 'apikey' && type !== 'bedrock') {
+    return extra
+  }
+  const quotaExtra: Record<string, unknown> = { ...(extra || {}) }
+  if (editQuotaLimit.value != null && editQuotaLimit.value > 0) {
+    quotaExtra.quota_limit = editQuotaLimit.value
+  }
+  if (editQuotaDailyLimit.value != null && editQuotaDailyLimit.value > 0) {
+    quotaExtra.quota_daily_limit = editQuotaDailyLimit.value
+  }
+  if (editQuotaWeeklyLimit.value != null && editQuotaWeeklyLimit.value > 0) {
+    quotaExtra.quota_weekly_limit = editQuotaWeeklyLimit.value
+  }
+  // 配额重置模式配置
+  if (editDailyResetMode.value === 'fixed') {
+    quotaExtra.quota_daily_reset_mode = 'fixed'
+    quotaExtra.quota_daily_reset_hour = editDailyResetHour.value ?? 0
+  }
+  if (editWeeklyResetMode.value === 'fixed') {
+    quotaExtra.quota_weekly_reset_mode = 'fixed'
+    quotaExtra.quota_weekly_reset_day = editWeeklyResetDay.value ?? 1
+    quotaExtra.quota_weekly_reset_hour = editWeeklyResetHour.value ?? 0
+  }
+  if (editDailyResetMode.value === 'fixed' || editWeeklyResetMode.value === 'fixed') {
+    quotaExtra.quota_reset_timezone = editResetTimezone.value || 'UTC'
+  }
+  // 配额通知配置
+  writeQuotaNotifyToExtra(quotaExtra, 'create')
+  if (Object.keys(quotaExtra).length > 0) {
+    return quotaExtra
+  }
+  return extra
+}
+
 // Create account and handle success/failure
 const createAccountAndFinish = async (
   platform: AccountPlatform,
@@ -6155,38 +6302,8 @@ const createAccountAndFinish = async (
   if (!applyTempUnschedConfig(credentials)) {
     return
   }
-  // Inject quota limits for apikey/bedrock accounts
   let finalExtra = withUpstreamRequestIdHeader(extra)
-  if (type === 'apikey' || type === 'bedrock') {
-    const quotaExtra: Record<string, unknown> = { ...(finalExtra || {}) }
-    if (editQuotaLimit.value != null && editQuotaLimit.value > 0) {
-      quotaExtra.quota_limit = editQuotaLimit.value
-    }
-    if (editQuotaDailyLimit.value != null && editQuotaDailyLimit.value > 0) {
-      quotaExtra.quota_daily_limit = editQuotaDailyLimit.value
-    }
-    if (editQuotaWeeklyLimit.value != null && editQuotaWeeklyLimit.value > 0) {
-      quotaExtra.quota_weekly_limit = editQuotaWeeklyLimit.value
-    }
-    // Quota reset mode config
-    if (editDailyResetMode.value === 'fixed') {
-      quotaExtra.quota_daily_reset_mode = 'fixed'
-      quotaExtra.quota_daily_reset_hour = editDailyResetHour.value ?? 0
-    }
-    if (editWeeklyResetMode.value === 'fixed') {
-      quotaExtra.quota_weekly_reset_mode = 'fixed'
-      quotaExtra.quota_weekly_reset_day = editWeeklyResetDay.value ?? 1
-      quotaExtra.quota_weekly_reset_hour = editWeeklyResetHour.value ?? 0
-    }
-    if (editDailyResetMode.value === 'fixed' || editWeeklyResetMode.value === 'fixed') {
-      quotaExtra.quota_reset_timezone = editResetTimezone.value || 'UTC'
-    }
-    // Quota notify config
-    writeQuotaNotifyToExtra(quotaExtra, 'create')
-    if (Object.keys(quotaExtra).length > 0) {
-      finalExtra = quotaExtra
-    }
-  }
+  finalExtra = applyQuotaExtra(type, finalExtra)
   if (platform === 'openai') {
     if (type === 'apikey') {
       applyOpenAIEndpointCapabilities(credentials)

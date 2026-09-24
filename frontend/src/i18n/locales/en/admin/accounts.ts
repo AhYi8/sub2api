@@ -156,7 +156,6 @@ export default {
         balanceProbeTooltip: 'Query the provider balance endpoint for the account balance',
         balanceLow: 'Insufficient balance',
         noBalanceEndpoint: 'This platform has no balance query endpoint',
-        apiKeyBatchHint: 'Batch creation supported: one API Key per line; multiple keys create multiple accounts, each auto-named "Name #index"',
       },
       duplicateCheck: {
         apiKeyCheckFailed: 'Duplicate check service is unavailable, please retry later',
@@ -611,6 +610,7 @@ export default {
       baseUrl: 'Base URL',
       baseUrlHint: 'Leave default for official Anthropic API',
       apiKeyRequired: 'API Key *',
+      apiKeyBatchHint: 'Batch creation supported: one API Key per line; multiple keys create multiple accounts, each auto-named "Name #index"',
       apiKeyPlaceholder: 'sk-ant-api03-...',
       apiKeyHint: 'Your Claude Console API Key',
       upstreamRequestIdHeader: 'Upstream ID',

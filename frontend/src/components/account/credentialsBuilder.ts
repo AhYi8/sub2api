@@ -270,6 +270,18 @@ export function isCNProviderPlatform(platform: string): platform is CnProviderPl
   return platform === 'kimi' || platform === 'zhipu' || platform === 'deepseek' || platform === 'minimax'
 }
 
+/**
+ * 通用 API Key 输入支持「一行一条密钥、多条批量创建」的平台集合，
+ * 同时是创建表单通用 apikey 输入区块的渲染条件（单一事实源）。
+ * 除 antigravity 外的全部平台都走多行输入（antigravity 的 apikey 是
+ * upstream 专属字段 base_url + api_key，单独在 upstream 区块批量）；
+ * 单条输入时创建行为与单行输入框完全一致。新增平台时同步更新本集合。
+ */
+export function supportsMultiLineApiKeyInput(platform: string): boolean {
+  return platform === 'anthropic' || platform === 'openai' || platform === 'gemini'
+    || platform === 'grok' || platform === 'opencode_go' || isCNProviderPlatform(platform)
+}
+
 /** DeepSeek、Kimi 与 MiniMax 提供原生 Responses 端点。 */
 export function cnSupportsNativeResponses(platform: string): boolean {
   return platform === 'deepseek' || platform === 'kimi' || platform === 'minimax' || platform === 'opencode_go'

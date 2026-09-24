@@ -12,6 +12,7 @@ const {
   importCodexSessionMock,
   createOpenAICodexPATMock,
   checkAPIKeysDuplicateMock,
+  checkMixedChannelRiskMock,
   authIsSimpleMode,
 } = vi.hoisted(() => ({
   createAccountMock: vi.fn(),
@@ -23,6 +24,7 @@ const {
   importCodexSessionMock: vi.fn(),
   createOpenAICodexPATMock: vi.fn(),
   checkAPIKeysDuplicateMock: vi.fn(),
+  checkMixedChannelRiskMock: vi.fn(),
   authIsSimpleMode: { value: true },
 }))
 
@@ -49,7 +51,7 @@ vi.mock('@/api/admin', () => ({
       probeUpstreamBilling: probeUpstreamBillingMock,
       syncUpstreamModels: syncUpstreamModelsMock,
       checkAPIKeysDuplicate: checkAPIKeysDuplicateMock,
-      checkMixedChannelRisk: vi.fn().mockResolvedValue({ has_risk: false }),
+      checkMixedChannelRisk: checkMixedChannelRiskMock,
       importCodexSession: importCodexSessionMock,
       createOpenAICodexPAT: createOpenAICodexPATMock,
     },
@@ -182,7 +184,7 @@ async function submitApiKeyAccount(
     await selectButtonByText(wrapper, 'API Key')
   }
   await wrapper.get('form#create-account-form input[type="text"]').setValue(`${platform} account`)
-  await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+  await wrapper.get('[data-testid="api-keys-input"]').setValue('test-api-key')
   if (enableLongContextBilling) {
     await wrapper.get('[data-testid="openai-long-context-billing-toggle"]').trigger('click')
   }
@@ -212,7 +214,11 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     probeUpstreamBillingMock.mockReset().mockResolvedValue({})
     syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], metadata: {} })
     showWarningMock.mockReset()
+    showErrorMock.mockReset()
+    showSuccessMock.mockReset()
     checkAPIKeysDuplicateMock.mockReset().mockResolvedValue({ duplicates: [] })
+    // anthropic/antigravity 创建都会做 mixed-channel 检查，默认无风险
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
     importCodexSessionMock.mockReset().mockResolvedValue({
       created: 1,
       updated: 0,
@@ -233,7 +239,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await selectButtonByText(wrapper, 'OpenAI')
     await selectButtonByText(wrapper, 'API Key')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('expiry account')
-    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('test-api-key')
     const input = wrapper.get<HTMLInputElement>('input[type="datetime-local"]')
 
     for (const [label, expected] of [
@@ -258,7 +264,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await selectButtonByText(wrapper, 'OpenAI')
     await selectButtonByText(wrapper, 'API Key')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('custom expiry account')
-    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('test-api-key')
     await selectButtonByText(wrapper, 'payment.oneMonth')
     await wrapper.get('input[type="datetime-local"]').setValue('2030-04-15T09:20')
 
@@ -315,7 +321,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await selectButtonByText(wrapper, 'OpenAI')
     await selectButtonByText(wrapper, 'API Key')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('openai account')
-    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('test-api-key')
     await wrapper.get('[data-testid="upstream-request-id-header"]').setValue('  X-Oneapi-Request-Id  ')
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
@@ -336,7 +342,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await selectButtonByText(wrapper, 'OpenAI')
     await selectButtonByText(wrapper, 'API Key')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('openai account')
-    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('test-api-key')
     await wrapper.get('[data-testid="openai-images-url-to-b64-json-toggle"]').trigger('click')
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
@@ -350,7 +356,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await selectButtonByText(wrapper, 'OpenAI')
     await selectButtonByText(wrapper, 'API Key')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('OpenCode account')
-    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('test-api-key')
     await wrapper.get('[data-testid="model-whitelist-selector"]').trigger('click')
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
@@ -363,7 +369,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'OpenAI')
     await selectButtonByText(wrapper, 'API Key')
-    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('test-api-key')
     await wrapper.get('[data-testid="model-whitelist-selector"]').trigger('click')
     await flushPromises()
 
@@ -377,7 +383,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await selectButtonByText(wrapper, 'OpenAI')
     await selectButtonByText(wrapper, 'API Key')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('Mapped account')
-    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('test-api-key')
     await selectButtonByText(wrapper, 'admin.accounts.modelMapping')
     await selectButtonByText(wrapper, 'admin.accounts.addMapping')
     await wrapper.get('input[placeholder="admin.accounts.requestModel"]').setValue('public-glm')
@@ -400,7 +406,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await selectButtonByText(wrapper, 'OpenAI')
     await selectButtonByText(wrapper, 'API Key')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('OpenCode account')
-    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('test-api-key')
     await wrapper.get('[data-testid="model-whitelist-selector"]').trigger('click')
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
@@ -461,7 +467,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'OpenCode')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('oc')
-    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-opencode-zen')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('sk-opencode-zen')
 
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
@@ -491,7 +497,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await selectButtonByText(wrapper, 'OpenCode')
     await selectButtonByText(wrapper, 'admin.accounts.opencodeGo.accountMode.go')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('oc-go')
-    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-opencode-go')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('sk-opencode-go')
 
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
@@ -520,7 +526,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'Kimi')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('Kimi adaptive')
-    await wrapper.get('[data-testid="cn-api-keys-input"]').setValue('sk-kimi')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('sk-kimi')
 
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
@@ -543,7 +549,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await selectButtonByText(wrapper, 'Kimi')
     await selectButtonByText(wrapper, 'admin.accounts.cnProviders.accountMode.coding')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('Kimi coding')
-    await wrapper.get('[data-testid="cn-api-keys-input"]').setValue('sk-kimi-coding')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('sk-kimi-coding')
 
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
@@ -567,7 +573,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await wrapper.get('form#create-account-form input[type="text"]').setValue('MiniMax adaptive')
     // MiniMax 归入国产平台分组（isCNProviderPlatform 含 minimax），继承多行批量
     // API Key 输入（fork 功能对上游新国产平台的自然扩展），不再是 password 输入框。
-    await wrapper.get('[data-testid="cn-api-keys-input"]').setValue('sk-minimax')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('sk-minimax')
 
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
@@ -591,7 +597,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await wrapper
       .get('[data-testid="cn-adaptive-base-url-chat_completions"]')
       .setValue('https://relay.example.com/v1')
-    await wrapper.get('[data-testid="cn-api-keys-input"]').setValue('sk-relay')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('sk-relay')
 
     expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('syncCredentials')).toMatchObject({
       platform: 'kimi',
@@ -663,7 +669,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
       .find((candidate) => candidate.attributes('placeholder') === 'https://cloudcode-pa.googleapis.com')
     expect(baseInput).toBeDefined()
     await baseInput?.setValue('https://relay.example')
-    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-upstream')
+    await wrapper.get('[data-testid="antigravity-upstream-api-keys-input"]').setValue('sk-upstream')
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
 
@@ -749,7 +755,7 @@ describe('CreateAccountModal CN provider API key batch creation', () => {
     if (accountName !== undefined) {
       await wrapper.get('form#create-account-form input[type="text"]').setValue(accountName)
     }
-    await wrapper.get('[data-testid="cn-api-keys-input"]').setValue(apiKeyInput)
+    await wrapper.get('[data-testid="api-keys-input"]').setValue(apiKeyInput)
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
     return wrapper
@@ -796,13 +802,13 @@ describe('CreateAccountModal CN provider API key batch creation', () => {
   it('批量输入多行密钥时渲染计数徽章与批量创建提示', async () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'Zhipu GLM')
-    await wrapper.get('[data-testid="cn-api-keys-input"]').setValue('key-a')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('key-a')
 
     // 单条时不显示批量提示
     expect(wrapper.text()).not.toContain('admin.accounts.oauth.keysCount')
     expect(wrapper.text()).not.toContain('admin.accounts.oauth.batchCreateAccounts')
 
-    await wrapper.get('[data-testid="cn-api-keys-input"]').setValue('key-a\nkey-b')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('key-a\nkey-b')
     expect(wrapper.text()).toContain('admin.accounts.oauth.keysCount:{"count":2}')
     expect(wrapper.text()).toContain('admin.accounts.oauth.batchCreateAccounts:{"count":2}')
   })
@@ -854,7 +860,7 @@ describe('CreateAccountModal CN provider API key batch creation', () => {
     expect(wrapper.emitted('created')).toHaveLength(1)
     // 弹窗未关闭、输入保留，便于修正失败密钥后重试
     expect(wrapper.emitted('close')).toBeUndefined()
-    expect((wrapper.get('[data-testid="cn-api-keys-input"]').element as HTMLTextAreaElement).value).toBe('key-a\nkey-b')
+    expect((wrapper.get('[data-testid="api-keys-input"]').element as HTMLTextAreaElement).value).toBe('key-a\nkey-b')
     expect(wrapper.text()).toContain('admin.accounts.oauth.keyAuthFailed:{"index":2,"error":"boom"}')
   })
 
@@ -970,7 +976,7 @@ describe('CreateAccountModal CN provider API key batch creation', () => {
     await selectButtonByText(wrapper, 'OpenAI')
     await selectButtonByText(wrapper, 'API Key')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('openai account')
-    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-test-api-key')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('sk-test-api-key')
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
 
@@ -979,14 +985,6 @@ describe('CreateAccountModal CN provider API key batch creation', () => {
     expect(showErrorMock).toHaveBeenCalledWith(
       'admin.accounts.duplicateCheck.apiKeyExists:{"name":"已有 OpenAI 账号"}'
     )
-  })
-
-  it('非国产平台仍使用单行密码输入（回归保护）', async () => {
-    const wrapper = mountModal()
-    await selectButtonByText(wrapper, 'admin.accounts.claudeConsole')
-
-    expect(wrapper.find('[data-testid="cn-api-keys-input"]').exists()).toBe(false)
-    expect(wrapper.find('form#create-account-form input[type="password"]').exists()).toBe(true)
   })
 
   it('批量输入查重后仅剩一条时仍按批量语义命名（名称 #1）', async () => {
@@ -1014,7 +1012,7 @@ describe('CreateAccountModal CN provider API key batch creation', () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'Zhipu GLM')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('防重入')
-    await wrapper.get('[data-testid="cn-api-keys-input"]').setValue('key-a\nkey-b')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('key-a\nkey-b')
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
 
@@ -1041,7 +1039,7 @@ describe('CreateAccountModal CN provider API key batch creation', () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'Zhipu GLM')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('切平台')
-    await wrapper.get('[data-testid="cn-api-keys-input"]').setValue('key-a\nkey-b')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('key-a\nkey-b')
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
 
@@ -1069,5 +1067,364 @@ describe('CreateAccountModal CN provider API key batch creation', () => {
     expect(showErrorMock).toHaveBeenCalledWith('admin.accounts.pleaseEnterAccountName')
     // 上一轮的错误列表已被提交入口清空，不再残留旧密钥信息
     expect(wrapper.text()).not.toContain('admin.accounts.oauth.keyAuthFailed')
+  })
+})
+
+// 批量创建能力从国产平台推广到全部 apikey 型入口：
+// 通用 apikey 单行输入（anthropic/openai/gemini/grok/opencode_go）与 antigravity upstream。
+describe('CreateAccountModal all-platform apikey batch creation', () => {
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    createAccountMock.mockReset().mockResolvedValue({ id: 42, platform: 'anthropic', type: 'apikey' })
+    probeUpstreamBillingMock.mockReset().mockResolvedValue({})
+    syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], metadata: {} })
+    showWarningMock.mockReset()
+    showErrorMock.mockReset()
+    showSuccessMock.mockReset()
+    checkAPIKeysDuplicateMock.mockReset().mockResolvedValue({ duplicates: [] })
+    // anthropic 创建会做 mixed-channel 检查，默认无风险
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+  })
+
+  // 进入各平台 apikey 表单（不提交）：不同平台的入口按钮不同（openai/grok 需再点 API Key 分类）
+  async function openPlatformApiKeyForm(
+    platform: 'anthropic' | 'openai' | 'gemini' | 'grok' | 'opencode_go',
+    apiKeyInput: string,
+    accountName: string
+  ) {
+    const wrapper = mountModal()
+    const platformButton = {
+      anthropic: 'admin.accounts.claudeConsole',
+      openai: 'OpenAI',
+      gemini: 'Gemini',
+      grok: 'Grok',
+      opencode_go: 'OpenCode',
+    }[platform]
+    await selectButtonByText(wrapper, platformButton)
+    if (platform === 'openai' || platform === 'grok') {
+      await selectButtonByText(wrapper, 'API Key')
+    } else if (platform === 'gemini') {
+      await selectButtonByText(wrapper, 'admin.accounts.gemini.accountType.apiKeyTitle')
+    }
+    await wrapper.get('form#create-account-form input[type="text"]').setValue(accountName)
+    await wrapper.get('[data-testid="api-keys-input"]').setValue(apiKeyInput)
+    return wrapper
+  }
+
+  async function submitPlatformApiKeyBatch(
+    platform: 'anthropic' | 'openai' | 'gemini' | 'grok' | 'opencode_go',
+    apiKeyInput: string,
+    accountName: string
+  ) {
+    const wrapper = await openPlatformApiKeyForm(platform, apiKeyInput, accountName)
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    return wrapper
+  }
+
+  it.each([
+    ['anthropic', 'anthropic', 'https://api.anthropic.com'],
+    ['openai', 'openai', 'https://api.openai.com'],
+    ['gemini', 'gemini', 'https://generativelanguage.googleapis.com'],
+    ['grok', 'grok', 'https://api.x.ai/v1'],
+  ] as const)('%s 平台多行密钥批量创建：查重带平台、逐条创建、名称 #序号', async (platform, expectedPlatform, expectedBaseUrl) => {
+    await submitPlatformApiKeyBatch(platform, 'key-a\nkey-b', `${platform} 批量`)
+
+    // 查重按平台发起；批量创建逐条提交并按「名称 #序号」命名
+    expect(checkAPIKeysDuplicateMock).toHaveBeenCalledWith(expectedPlatform, ['key-a', 'key-b'])
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    expect(createAccountMock.mock.calls[0]?.[0]?.name).toBe(`${platform} 批量 #1`)
+    expect(createAccountMock.mock.calls[1]?.[0]?.name).toBe(`${platform} 批量 #2`)
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials.api_key).toBe('key-a')
+    expect(createAccountMock.mock.calls[1]?.[0]?.credentials.api_key).toBe('key-b')
+    // 除 api_key 外的凭据字段（base_url 等）来自同一表单配置，逐条共享
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials.base_url).toBe(expectedBaseUrl)
+    expect(showSuccessMock).toHaveBeenCalledWith('admin.accounts.oauth.batchSuccess:{"count":2}')
+  })
+
+  it('opencode_go 平台多行密钥批量创建：逐条创建并共享多协议端点配置', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenCode')
+    await selectButtonByText(wrapper, 'admin.accounts.opencodeGo.accountMode.go')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('opencode 批量')
+    await wrapper.get('[data-testid="api-keys-input"]').setValue('key-a\nkey-b')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(checkAPIKeysDuplicateMock).toHaveBeenCalledWith('opencode_go', ['key-a', 'key-b'])
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    expect(createAccountMock.mock.calls[0]?.[0]?.name).toBe('opencode 批量 #1')
+    expect(createAccountMock.mock.calls[1]?.[0]?.name).toBe('opencode 批量 #2')
+    // 共享的账号模式与多协议端点配置随每条账号继承
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      api_key: 'key-a',
+      account_mode: 'go',
+      api_protocol: 'adaptive'
+    })
+  })
+
+  it('全部 apikey 平台统一使用多行密钥输入（回归保护）', async () => {
+    const wrapper = await openPlatformApiKeyForm('anthropic', 'only-key', '回归保护')
+
+    // 批量能力已推广到全部 apikey 平台：单行密码输入框不再存在（bedrock 专属字段除外）
+    expect(wrapper.find('[data-testid="api-keys-input"]').exists()).toBe(true)
+    expect(wrapper.find('form#create-account-form input[type="password"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('admin.accounts.apiKeyBatchHint')
+  })
+
+  it.each(['anthropic', 'openai', 'gemini', 'grok', 'opencode_go'] as const)(
+    '%s 平台多行输入渲染计数徽章与批量提示',
+    async (platform) => {
+      const wrapper = await openPlatformApiKeyForm(platform, 'key-a\nkey-b', '计数')
+
+      expect(wrapper.text()).toContain('admin.accounts.oauth.keysCount:{"count":2}')
+      expect(wrapper.text()).toContain('admin.accounts.oauth.batchCreateAccounts:{"count":2}')
+      expect(wrapper.text()).toContain('admin.accounts.apiKeyBatchHint')
+    }
+  )
+
+  it('非 CN 平台批量创建查重命中时跳过重复行并继续创建其余', async () => {
+    checkAPIKeysDuplicateMock.mockResolvedValueOnce({
+      duplicates: [{ api_key: 'key-old', account_id: 3, account_name: '已有 Anthropic 账号' }]
+    })
+
+    const wrapper = await submitPlatformApiKeyBatch('anthropic', 'key-old\nkey-new', '查重跳过')
+
+    expect(checkAPIKeysDuplicateMock).toHaveBeenCalledWith('anthropic', ['key-old', 'key-new'])
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials.api_key).toBe('key-new')
+    expect(createAccountMock.mock.calls[0]?.[0]?.name).toBe('查重跳过 #1')
+    expect(showWarningMock).toHaveBeenCalledWith('admin.accounts.duplicateCheck.batchSuccessWithSkipped:{"count":1}')
+    expect(wrapper.emitted('close')).toBeUndefined()
+    expect(wrapper.text()).toContain('admin.accounts.duplicateCheck.skippedKeys:{"count":1}')
+  })
+
+  it('非 CN 平台批量部分失败时保留弹窗与错误列表', async () => {
+    createAccountMock
+      .mockResolvedValueOnce({ id: 42, platform: 'openai', type: 'apikey' })
+      .mockRejectedValueOnce({ response: { status: 500, data: { detail: 'boom' } } })
+
+    const wrapper = await submitPlatformApiKeyBatch('openai', 'key-a\nkey-b', '部分失败')
+
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    expect(showWarningMock).toHaveBeenCalledWith('admin.accounts.oauth.batchPartialSuccess:{"success":1,"failed":1}')
+    expect(wrapper.emitted('created')).toHaveLength(1)
+    expect(wrapper.emitted('close')).toBeUndefined()
+    expect((wrapper.get('[data-testid="api-keys-input"]').element as HTMLTextAreaElement).value).toBe('key-a\nkey-b')
+    expect(wrapper.text()).toContain('admin.accounts.oauth.keyAuthFailed:{"index":2,"error":"boom"}')
+  })
+})
+
+describe('CreateAccountModal antigravity upstream batch creation', () => {
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    createAccountMock.mockReset().mockResolvedValue({ id: 42, platform: 'antigravity', type: 'apikey' })
+    probeUpstreamBillingMock.mockReset().mockResolvedValue({})
+    syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], metadata: {} })
+    showWarningMock.mockReset()
+    showErrorMock.mockReset()
+    showSuccessMock.mockReset()
+    checkAPIKeysDuplicateMock.mockReset().mockResolvedValue({ duplicates: [] })
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+  })
+
+  async function submitUpstreamBatch(apiKeyInput: string, accountName: string) {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Antigravity')
+    await selectButtonByText(wrapper, 'admin.accounts.types.antigravityApikey')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue(accountName)
+    const baseInput = wrapper
+      .findAll('input')
+      .find((candidate) => candidate.attributes('placeholder') === 'https://cloudcode-pa.googleapis.com')
+    expect(baseInput).toBeDefined()
+    await baseInput?.setValue('https://relay.example')
+    await wrapper.get('[data-testid="antigravity-upstream-api-keys-input"]').setValue(apiKeyInput)
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    return wrapper
+  }
+
+  it('多行 API Key 批量创建：查重带平台、逐条创建、共享 base_url、mixed-channel 仅检查一次', async () => {
+    await submitUpstreamBatch('sk-a\nsk-b', '上游批量')
+
+    // 查重按 antigravity 平台发起，重复行跳过逻辑与通用路径一致
+    expect(checkAPIKeysDuplicateMock).toHaveBeenCalledWith('antigravity', ['sk-a', 'sk-b'])
+    // mixed-channel 风险基于 platform × group_ids，与具体密钥无关：批量只检查一次
+    expect(checkMixedChannelRiskMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    expect(createAccountMock.mock.calls[0]?.[0]?.name).toBe('上游批量 #1')
+    expect(createAccountMock.mock.calls[1]?.[0]?.name).toBe('上游批量 #2')
+    // 共享 base_url 逐条继承；api_key 逐条差异
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      api_key: 'sk-a',
+      base_url: 'https://relay.example'
+    })
+    expect(createAccountMock.mock.calls[1]?.[0]?.credentials).toMatchObject({
+      api_key: 'sk-b',
+      base_url: 'https://relay.example'
+    })
+    // upstream 也是 API-key 账号：每条都发起上游倍率首探
+    expect(createAccountMock.mock.calls[0]?.[0]?.upstream_billing_probe_enabled).toBe(true)
+    expect(probeUpstreamBillingMock).toHaveBeenCalledTimes(2)
+    expect(showSuccessMock).toHaveBeenCalledWith('admin.accounts.oauth.batchSuccess:{"count":2}')
+  })
+
+  it('单条输入保持既有路径：不加序号且 mixed-channel 检查一次', async () => {
+    await submitUpstreamBatch('sk-only', '上游单条')
+
+    expect(checkMixedChannelRiskMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.name).toBe('上游单条')
+    expect(showSuccessMock).toHaveBeenCalledWith('admin.accounts.accountCreated')
+  })
+
+  it('部分失败时提示部分成功并保留弹窗、输入与错误列表', async () => {
+    createAccountMock
+      .mockResolvedValueOnce({ id: 42, platform: 'antigravity', type: 'apikey' })
+      .mockRejectedValueOnce({ response: { status: 500, data: { detail: 'boom' } } })
+
+    const wrapper = await submitUpstreamBatch('sk-a\nsk-b', '上游混合')
+
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    expect(showWarningMock).toHaveBeenCalledWith('admin.accounts.oauth.batchPartialSuccess:{"success":1,"failed":1}')
+    expect(wrapper.emitted('created')).toHaveLength(1)
+    expect(wrapper.emitted('close')).toBeUndefined()
+    expect((wrapper.get('[data-testid="antigravity-upstream-api-keys-input"]').element as HTMLTextAreaElement).value).toBe('sk-a\nsk-b')
+    expect(wrapper.text()).toContain('admin.accounts.oauth.keyAuthFailed:{"index":2,"error":"boom"}')
+  })
+
+  it('查重命中跳过重复行后创建其余并展示跳过明细', async () => {
+    checkAPIKeysDuplicateMock.mockResolvedValueOnce({
+      duplicates: [{ api_key: 'sk-old', account_id: 8, account_name: '已有上游账号' }]
+    })
+
+    const wrapper = await submitUpstreamBatch('sk-old\nsk-new', '上游查重')
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials.api_key).toBe('sk-new')
+    expect(createAccountMock.mock.calls[0]?.[0]?.name).toBe('上游查重 #1')
+    expect(showWarningMock).toHaveBeenCalledWith('admin.accounts.duplicateCheck.batchSuccessWithSkipped:{"count":1}')
+    expect(wrapper.emitted('close')).toBeUndefined()
+    expect(wrapper.text()).toContain('admin.accounts.duplicateCheck.skippedKeys:{"count":1}')
+  })
+
+  it('mixed-channel 有风险时：确认前不创建，确认后逐条创建并携带确认标志', async () => {
+    checkMixedChannelRiskMock.mockResolvedValueOnce({ has_risk: true })
+
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Antigravity')
+    await selectButtonByText(wrapper, 'admin.accounts.types.antigravityApikey')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('风险确认')
+    const baseInput = wrapper
+      .findAll('input')
+      .find((candidate) => candidate.attributes('placeholder') === 'https://cloudcode-pa.googleapis.com')
+    await baseInput?.setValue('https://relay.example')
+    await wrapper.get('[data-testid="antigravity-upstream-api-keys-input"]').setValue('sk-a\nsk-b')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    // 确认前：只完成一次风险检查，未创建任何账号
+    expect(checkMixedChannelRiskMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock).not.toHaveBeenCalled()
+
+    // 用户确认风险后恢复批量流程，每条创建都带确认标志
+    wrapper.getComponent({ name: 'ConfirmDialog' }).vm.$emit('confirm')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    expect(createAccountMock.mock.calls[0]?.[0]?.confirm_mixed_channel_risk).toBe(true)
+    expect(createAccountMock.mock.calls[1]?.[0]?.confirm_mixed_channel_risk).toBe(true)
+    expect(createAccountMock.mock.calls[0]?.[0]?.name).toBe('风险确认 #1')
+    expect(createAccountMock.mock.calls[1]?.[0]?.name).toBe('风险确认 #2')
+  })
+
+  it('批量创建逐条继承临时不可调度规则（与单条路径一致）', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Antigravity')
+    await selectButtonByText(wrapper, 'admin.accounts.types.antigravityApikey')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('规则批量')
+    const baseInput = wrapper
+      .findAll('input')
+      .find((candidate) => candidate.attributes('placeholder') === 'https://cloudcode-pa.googleapis.com')
+    await baseInput?.setValue('https://relay.example')
+
+    // 开启临时不可调度并添加一条 429 预设规则（开关为区块标题旁的无文本 toggle）
+    const toggle = wrapper
+      .findAll('div.mb-3')
+      .find((container) => container.text().includes('admin.accounts.tempUnschedulable.title'))
+      ?.find('button')
+    expect(toggle).toBeDefined()
+    await toggle?.trigger('click')
+    await selectButtonByText(wrapper, '+ admin.accounts.tempUnschedulable.presets.rateLimitLabel')
+
+    await wrapper.get('[data-testid="antigravity-upstream-api-keys-input"]').setValue('sk-a\nsk-b')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    // 共享凭据构造阶段写入的规则被逐条 payload 继承，不因批量而丢失
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      temp_unschedulable_enabled: true,
+      temp_unschedulable_rules: [{ error_code: 429 }]
+    })
+    expect(createAccountMock.mock.calls[1]?.[0]?.credentials).toMatchObject({
+      temp_unschedulable_enabled: true
+    })
+  })
+
+  it('批量创建逐条携带配额限制（与单条路径一致）', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Antigravity')
+    await selectButtonByText(wrapper, 'admin.accounts.types.antigravityApikey')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('配额批量')
+    const baseInput = wrapper
+      .findAll('input')
+      .find((candidate) => candidate.attributes('placeholder') === 'https://cloudcode-pa.googleapis.com')
+    await baseInput?.setValue('https://relay.example')
+
+    // QuotaLimitCard 被 stub，但父级事件监听仍生效：直接 emit 更新配额上限
+    wrapper.getComponent({ name: 'QuotaLimitCard' }).vm.$emit('update:totalLimit', 100)
+
+    await wrapper.get('[data-testid="antigravity-upstream-api-keys-input"]').setValue('sk-a\nsk-b')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    // 配额注入与单条路径共用同一 helper，批量不丢弃
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.quota_limit).toBe(100)
+    expect(createAccountMock.mock.calls[1]?.[0]?.extra?.quota_limit).toBe(100)
+  })
+
+  it('mixed-channel 检查挂起期间的重复提交被防重入拦截', async () => {
+    // 受控 promise：查重完成后 mixed-channel 检查挂起，期间 submitting 占位须挡住第二次提交
+    let resolveRisk: ((value: { has_risk: boolean }) => void) | undefined
+    checkMixedChannelRiskMock.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveRisk = resolve })
+    )
+
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Antigravity')
+    await selectButtonByText(wrapper, 'admin.accounts.types.antigravityApikey')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('防重入')
+    const baseInput = wrapper
+      .findAll('input')
+      .find((candidate) => candidate.attributes('placeholder') === 'https://cloudcode-pa.googleapis.com')
+    await baseInput?.setValue('https://relay.example')
+    await wrapper.get('[data-testid="antigravity-upstream-api-keys-input"]').setValue('sk-a\nsk-b')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    // 检查挂起中再次触发提交：分支入口的 submitting 守卫直接忽略
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(checkMixedChannelRiskMock).toHaveBeenCalledTimes(1)
+
+    resolveRisk?.({ has_risk: false })
+    await flushPromises()
+
+    // 仅一轮批量流程，两条密钥各创建一次，不因并发提交重复建号
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    expect(createAccountMock.mock.calls[0]?.[0]?.name).toBe('防重入 #1')
+    expect(createAccountMock.mock.calls[1]?.[0]?.name).toBe('防重入 #2')
   })
 })
