@@ -80,7 +80,7 @@ type OpenAIAccountScheduleRequest struct {
 	// RoundRobin 严格轮询策略：跳过 session 粘性读写与 top-K 加权随机，
 	// 候选按 ID 升序 + 游标旋转选择。previous_response_id 与 guardian_parent
 	// 两层硬粘不受影响（上游会话状态绑定账号，打破会导致功能损坏）。
-	RoundRobin              bool
+	RoundRobin bool
 	// DisableStickyEscape keeps task-owner lookups on their account even when
 	// generic sticky health or concurrency heuristics would prefer another.
 	DisableStickyEscape     bool

@@ -15,12 +15,12 @@ import (
 // capturedXxx 记录查询参数，用于断言“按平台 + apikey 类型 + 不限状态”的查询语义。
 type dedupAccountRepoStub struct {
 	AccountRepository
-	accounts          []Account
-	listErr           error
-	called            bool
-	capturedPlatform  string
-	capturedType      string
-	capturedStatus    string
+	accounts         []Account
+	listErr          error
+	called           bool
+	capturedPlatform string
+	capturedType     string
+	capturedStatus   string
 }
 
 func (s *dedupAccountRepoStub) ListAllWithFilters(_ context.Context, platform, accountType, status, _ string, _ int64, _ string) ([]Account, error) {
