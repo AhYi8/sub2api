@@ -272,7 +272,7 @@ func grokStructuredErrorMessageCandidates(body []byte) []string {
 // unschedulable rules to a non-content 403. It reports true only when a rule
 // matched; unmatched responses retain the legacy entitlement cooldown.
 func (s *OpenAIGatewayService) applyGrokForbiddenPolicy(ctx context.Context, account *Account, responseBody []byte) bool {
-	if account == nil || s == nil || s.rateLimitService == nil {
+	if account == nil || s == nil {
 		return false
 	}
 

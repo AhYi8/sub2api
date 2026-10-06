@@ -181,6 +181,9 @@ func TestRateLimitService_HandleTempUnschedulable_PoolModeWithoutCustomPolicySki
 	svc := &RateLimitService{accountRepo: repo}
 	account := openAIModelNotFoundTempAccount()
 	account.Credentials["pool_mode"] = true
+	// 显式 disabled 时没有生效规则，Pool Mode 且未配置自定义错误码，
+	// 保留旧的跳过语义，不写任何状态。
+	account.Credentials["temp_unschedulable_mode"] = "disabled"
 
 	handled := svc.HandleTempUnschedulable(
 		context.Background(),
@@ -193,6 +196,28 @@ func TestRateLimitService_HandleTempUnschedulable_PoolModeWithoutCustomPolicySki
 	require.False(t, handled)
 	require.Zero(t, repo.tempCalls)
 	require.Empty(t, repo.modelRateLimitCalls)
+}
+
+// Pool Mode 不得绕过账号生效规则：即使未启用自定义错误码，账号显式
+// 规则（旧字段兼容映射为 override）仍需按模型维度生效。
+func TestRateLimitService_HandleTempUnschedulable_PoolModeWithAccountRulesAppliesModelScope(t *testing.T) {
+	repo := &modelNotFoundAccountRepoStub{}
+	svc := &RateLimitService{accountRepo: repo}
+	account := openAIModelNotFoundTempAccount()
+	account.Credentials["pool_mode"] = true
+
+	handled := svc.HandleTempUnschedulable(
+		context.Background(),
+		account,
+		http.StatusNotFound,
+		[]byte(`{"error":{"message":"endpoint not found"}}`),
+		"gpt-5.4",
+	)
+
+	require.True(t, handled)
+	require.Zero(t, repo.tempCalls)
+	require.Len(t, repo.modelRateLimitCalls, 1)
+	require.Equal(t, "gpt-5.4", repo.modelRateLimitCalls[0].scope)
 }
 
 func TestRateLimitService_HandleTempUnschedulable_PoolModeCustomPolicyUsesModelScope(t *testing.T) {
