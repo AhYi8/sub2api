@@ -16,6 +16,7 @@ import type {
   ClaudeModel,
   AccountUsageStatsResponse,
   TempUnschedulableStatus,
+  TempUnschedulablePolicy,
   AdminDataPayload,
   AdminDataImportResult,
   CodexSessionImportRequest,
@@ -454,6 +455,24 @@ export async function resetTempUnschedulable(id: number): Promise<{ message: str
     `/admin/accounts/${id}/temp-unschedulable`
   )
   return data
+}
+
+export async function getTempUnschedulablePolicy(platform: string): Promise<TempUnschedulablePolicy> {
+  const { data } = await apiClient.get<{ platform: string; policy: TempUnschedulablePolicy }>(
+    `/admin/settings/temp-unschedulable/${encodeURIComponent(platform)}`
+  )
+  return data.policy
+}
+
+export async function updateTempUnschedulablePolicy(
+  platform: string,
+  policy: TempUnschedulablePolicy
+): Promise<TempUnschedulablePolicy> {
+  const { data } = await apiClient.put<{ platform: string; policy: TempUnschedulablePolicy }>(
+    `/admin/settings/temp-unschedulable/${encodeURIComponent(platform)}`,
+    policy
+  )
+  return data.policy
 }
 
 /**
@@ -1174,6 +1193,8 @@ export const accountsAPI = {
   resetAccountQuota,
   getTempUnschedulableStatus,
   resetTempUnschedulable,
+  getTempUnschedulablePolicy,
+  updateTempUnschedulablePolicy,
   setSchedulable,
   getAvailableModels,
   syncUpstreamModels,

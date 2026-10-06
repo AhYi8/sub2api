@@ -135,6 +135,7 @@ type CreateAccountRequest struct {
 	AutoPauseOnExpired      *bool          `json:"auto_pause_on_expired"`
 	ProbeEnabled            *bool          `json:"upstream_billing_probe_enabled"`
 	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
+	TempUnschedulableMode   string         `json:"temp_unschedulable_mode" binding:"omitempty,oneof=inherit override disabled"`
 }
 
 // UpdateAccountRequest represents update account request
@@ -157,6 +158,7 @@ type UpdateAccountRequest struct {
 	ProbeEnabled            *bool          `json:"upstream_billing_probe_enabled"`
 	RateSyncEnabled         *bool          `json:"upstream_billing_rate_sync_enabled"`
 	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
+	TempUnschedulableMode   string         `json:"temp_unschedulable_mode" binding:"omitempty,oneof=inherit override disabled"`
 }
 
 // BulkUpdateAccountsRequest represents the payload for bulk editing accounts
@@ -1056,6 +1058,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 			ExpiresAt:             req.ExpiresAt,
 			AutoPauseOnExpired:    req.AutoPauseOnExpired,
 			ProbeEnabled:          req.ProbeEnabled,
+			TempUnschedulableMode: req.TempUnschedulableMode,
 			SkipMixedChannelCheck: skipCheck,
 		})
 		if execErr != nil {
@@ -1246,6 +1249,7 @@ func (h *AccountHandler) Update(c *gin.Context) {
 		AutoPauseOnExpired:    req.AutoPauseOnExpired,
 		ProbeEnabled:          req.ProbeEnabled,
 		RateSyncEnabled:       req.RateSyncEnabled,
+		TempUnschedulableMode: req.TempUnschedulableMode,
 		SkipMixedChannelCheck: skipCheck,
 	})
 	if err != nil {

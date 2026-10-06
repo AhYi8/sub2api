@@ -409,6 +409,9 @@ export default {
       },
       tempUnschedulable: {
         title: 'Temp Unschedulable',
+        inherit: 'Inherit platform policy',
+        override: 'Account override',
+        disabled: 'Disable policy',
         statusTitle: 'Temp Unschedulable Status',
         hint: 'Disable accounts temporarily when error code and keyword both match.',
         notice: 'Rules are evaluated in order and require both error code and keyword match.',

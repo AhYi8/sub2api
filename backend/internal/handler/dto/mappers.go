@@ -276,6 +276,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		OverloadUntil:           a.OverloadUntil,
 		TempUnschedulableUntil:  a.TempUnschedulableUntil,
 		TempUnschedulableReason: a.TempUnschedulableReason,
+		TempUnschedulableMode:   tempUnschedulableMode(a),
 		SessionWindowStart:      a.SessionWindowStart,
 		SessionWindowEnd:        a.SessionWindowEnd,
 		SessionWindowStatus:     a.SessionWindowStatus,
@@ -458,6 +459,25 @@ func AccountFromService(a *service.Account) *Account {
 // AccountListItemFromAccount projects a full account response into the
 // compact shape used by the paginated admin account list. Keeping this
 // projection separate from Account preserves the existing detail API.
+func tempUnschedulableMode(a *service.Account) string {
+	if a == nil || a.Credentials == nil {
+		return "inherit"
+	}
+	if mode, ok := a.Credentials["temp_unschedulable_mode"].(string); ok {
+		mode = strings.ToLower(strings.TrimSpace(mode))
+		if mode == "inherit" || mode == "override" || mode == "disabled" {
+			return mode
+		}
+	}
+	if enabled, ok := a.Credentials["temp_unschedulable_enabled"].(bool); ok {
+		if enabled {
+			return "override"
+		}
+		return "disabled"
+	}
+	return "inherit"
+}
+
 func AccountListItemFromAccount(a *Account) *AccountListItem {
 	if a == nil {
 		return nil
@@ -472,7 +492,7 @@ func AccountListItemFromAccount(a *Account) *AccountListItem {
 		AutoPauseOnExpired: a.AutoPauseOnExpired, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 		Schedulable: a.Schedulable, RateLimitedAt: a.RateLimitedAt, RateLimitResetAt: a.RateLimitResetAt,
 		OverloadUntil: a.OverloadUntil, TempUnschedulableUntil: a.TempUnschedulableUntil,
-		TempUnschedulableReason: a.TempUnschedulableReason, SessionWindowStart: a.SessionWindowStart,
+		TempUnschedulableReason: a.TempUnschedulableReason, TempUnschedulableMode: a.TempUnschedulableMode, SessionWindowStart: a.SessionWindowStart,
 		SessionWindowEnd: a.SessionWindowEnd, SessionWindowStatus: a.SessionWindowStatus,
 		WindowCostLimit: a.WindowCostLimit, WindowCostStickyReserve: a.WindowCostStickyReserve,
 		MaxSessions: a.MaxSessions, SessionIdleTimeoutMin: a.SessionIdleTimeoutMin, BaseRPM: a.BaseRPM,

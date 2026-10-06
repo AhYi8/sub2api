@@ -2511,24 +2511,14 @@
               {{ t('admin.accounts.tempUnschedulable.hint') }}
             </p>
           </div>
-          <button
-            type="button"
-            @click="tempUnschedEnabled = !tempUnschedEnabled"
-            :class="[
-              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
-              tempUnschedEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
-            ]"
-          >
-            <span
-              :class="[
-                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
-                tempUnschedEnabled ? 'translate-x-5' : 'translate-x-0'
-              ]"
-            />
-          </button>
+          <select v-model="tempUnschedMode" class="input-field w-36">
+            <option value="disabled">{{ t('admin.accounts.tempUnschedulable.disabled') }}</option>
+            <option value="inherit">{{ t('admin.accounts.tempUnschedulable.inherit') }}</option>
+            <option value="override">{{ t('admin.accounts.tempUnschedulable.override') }}</option>
+          </select>
         </div>
 
-        <div v-if="tempUnschedEnabled" class="space-y-3">
+        <div v-if="tempUnschedMode === 'override'" class="space-y-3">
           <div class="rounded-lg bg-blue-50 p-3 dark:bg-blue-900/20">
               <p class="text-xs text-blue-700 dark:text-blue-400">
                 <Icon name="exclamationTriangle" size="sm" class="mr-1 inline" :stroke-width="2" />
@@ -4597,7 +4587,8 @@ const vertexProjectId = ref('')
 const vertexClientEmail = ref('')
 const vertexLocation = ref('global')
 const vertexServiceAccountDragActive = ref(false)
-const tempUnschedEnabled = ref(false)
+const tempUnschedMode = ref<'inherit' | 'override' | 'disabled'>('disabled')
+const tempUnschedEnabled = computed(() => tempUnschedMode.value === 'override')
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 const getModelMappingKey = createStableObjectKeyResolver<ModelMapping>('create-model-mapping')
 const getOpenAICompactModelMappingKey = createStableObjectKeyResolver<ModelMapping>('create-openai-compact-model-mapping')
@@ -5253,18 +5244,16 @@ const buildTempUnschedRules = (rules: TempUnschedRuleForm[]) => {
 }
 
 const applyTempUnschedConfig = (credentials: Record<string, unknown>) => {
-  if (!tempUnschedEnabled.value) {
-    delete credentials.temp_unschedulable_enabled
-    delete credentials.temp_unschedulable_rules
-    return true
-  }
+  delete credentials.temp_unschedulable_enabled
+  delete credentials.temp_unschedulable_rules
+  credentials.temp_unschedulable_mode = tempUnschedMode.value
+  if (tempUnschedMode.value !== 'override') return true
 
   const rules = buildTempUnschedRules(tempUnschedRules.value)
   if (rules.length === 0) {
     appStore.showError(t('admin.accounts.tempUnschedulable.rulesInvalid'))
     return false
   }
-
   credentials.temp_unschedulable_enabled = true
   credentials.temp_unschedulable_rules = rules
   return true
@@ -5626,7 +5615,7 @@ const resetForm = () => {
   vertexProjectId.value = ''
   vertexClientEmail.value = ''
   vertexLocation.value = 'global'
-  tempUnschedEnabled.value = false
+  tempUnschedMode.value = 'disabled'
   tempUnschedRules.value = []
   geminiOAuthType.value = 'code_assist'
   geminiTierGoogleOne.value = 'google_one_free'
@@ -7425,7 +7414,8 @@ const handleCookieAuth = async (sessionKey: string) => {
 
         const credentials: Record<string, unknown> = { ...tokenInfo }
         applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
-        if (tempUnschedEnabled.value) {
+        credentials.temp_unschedulable_mode = tempUnschedMode.value
+        if (tempUnschedMode.value === 'override') {
           credentials.temp_unschedulable_enabled = true
           credentials.temp_unschedulable_rules = tempUnschedPayload
         }

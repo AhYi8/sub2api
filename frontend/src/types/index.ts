@@ -1031,6 +1031,14 @@ export interface TempUnschedulableRule {
   description: string
 }
 
+export type TempUnschedulableMode = 'inherit' | 'override' | 'disabled'
+
+export interface TempUnschedulablePolicy {
+  platform?: string
+  enabled: boolean
+  rules: TempUnschedulableRule[]
+}
+
 export interface TempUnschedulableState {
   until_unix: number
   triggered_at_unix: number
@@ -1270,6 +1278,7 @@ export interface Account {
   overload_until: string | null
   temp_unschedulable_until: string | null
   temp_unschedulable_reason: string | null
+  temp_unschedulable_mode?: TempUnschedulableMode
 
   // Session window fields (5-hour window)
   session_window_start: string | null
@@ -1533,6 +1542,7 @@ export interface CreateAccountRequest {
   auto_pause_on_expired?: boolean
   upstream_billing_probe_enabled?: boolean
   confirm_mixed_channel_risk?: boolean
+  temp_unschedulable_mode?: TempUnschedulableMode
 }
 
 export interface UpdateAccountRequest {
@@ -1554,6 +1564,7 @@ export interface UpdateAccountRequest {
   upstream_billing_probe_enabled?: boolean
   upstream_billing_rate_sync_enabled?: boolean
   confirm_mixed_channel_risk?: boolean
+  temp_unschedulable_mode?: TempUnschedulableMode
 }
 
 export type GrokMediaEligibilityMode = 'auto' | 'enabled' | 'disabled'

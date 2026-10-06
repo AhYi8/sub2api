@@ -174,7 +174,7 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	}
 	shouldDisable := s.rateLimitService.HandleUpstreamError(stateCtx, account, statusCode, headers, responseBody)
 	modelTempMatched := statusCode != http.StatusUnauthorized && tempUnschedulableModel(stateCtx, nil) != "" &&
-		len(matchTempUnschedulableRules(account, statusCode, responseBody)) > 0
+		len(matchTempUnschedulableRules(stateCtx, s.rateLimitService, account, statusCode, responseBody)) > 0
 	if shouldDisable && !modelTempMatched {
 		s.BlockAccountScheduling(account, time.Time{}, "upstream_disable")
 	}

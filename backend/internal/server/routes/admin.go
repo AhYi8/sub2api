@@ -603,6 +603,9 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// Web Search 模拟配置
 		adminSettings.GET("/web-search-emulation", h.Admin.Setting.GetWebSearchEmulationConfig)
 		adminSettings.PUT("/web-search-emulation", h.Admin.Setting.UpdateWebSearchEmulationConfig)
+		// 平台级临时不可调度策略
+		adminSettings.GET("/temp-unschedulable/:platform", h.Admin.Setting.GetTempUnschedulablePolicy)
+		adminSettings.PUT("/temp-unschedulable/:platform", h.Admin.Setting.UpdateTempUnschedulablePolicy)
 		adminSettings.POST("/web-search-emulation/test", h.Admin.Setting.TestWebSearchEmulation)
 		adminSettings.POST("/web-search-emulation/reset-usage", h.Admin.Setting.ResetWebSearchUsage)
 	}

@@ -118,6 +118,7 @@ type WebSearchManagerBuilder func(cfg *WebSearchEmulationConfig, proxyURLs map[i
 // SettingService 系统设置服务
 type SettingService struct {
 	settingRepo                 SettingRepository
+	tempPolicyRepo              TempUnschedulablePolicyRepository
 	defaultSubGroupReader       DefaultSubscriptionGroupReader
 	proxyRepo                   ProxyRepository // for resolving websearch provider proxy URLs
 	cfg                         *config.Config
@@ -290,9 +291,13 @@ const (
 
 // NewSettingService 创建系统设置服务实例
 func NewSettingService(settingRepo SettingRepository, cfg *config.Config) *SettingService {
-	return &SettingService{
-		settingRepo: settingRepo,
-		cfg:         cfg,
+	return &SettingService{settingRepo: settingRepo, cfg: cfg}
+}
+
+// SetTempUnschedulablePolicyRepository 注入平台策略仓储。
+func (s *SettingService) SetTempUnschedulablePolicyRepository(repo TempUnschedulablePolicyRepository) {
+	if s != nil {
+		s.tempPolicyRepo = repo
 	}
 }
 

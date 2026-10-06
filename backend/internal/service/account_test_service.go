@@ -151,6 +151,7 @@ type AccountTestService struct {
 	modelMetadataRegistry     map[string]modelsDevProvider
 	modelMetadataRegistryAt   time.Time
 	pluginManager             *PluginManager
+	rateLimitService          *RateLimitService
 	openaiGatewayService      *OpenAIGatewayService
 	agentIdentityTaskMu       sync.Mutex
 	agentIdentityWS           agentIdentityWSConnectionInvalidator
@@ -358,7 +359,7 @@ func createTestPayload(modelID string) (map[string]any, error) {
 // modelID is optional - if empty, defaults to claude.DefaultTestModel
 // mode is optional - "compact" routes OpenAI accounts to the /responses/compact probe path
 // opts is optional media (image/audio data URLs for real generation / STT).
-func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int64, modelID string, prompt string, mode string, opts ...AccountTestOptions) error {
+func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int64, modelID string, prompt string, mode string, opts ...AccountTestOptions) (err error) {
 	ctx := c.Request.Context()
 	testOpts := firstAccountTestOptions(opts)
 
@@ -367,6 +368,20 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Account not found")
 	}
+	if account == nil {
+		return s.sendErrorAndEnd(c, "Account not found")
+	}
+
+	// 所有平台测试成功后统一提前清除规则触发的运行时调度限制；恢复函数只
+	// 识别带 status_code 的规则状态，不会触碰手动禁用或其他错误状态。
+	defer func() {
+		if err != nil || s.rateLimitService == nil {
+			return
+		}
+		if recoverErr := s.rateLimitService.RecoverTemporarySchedulingStateAfterSuccess(ctx, accountID, strings.TrimSpace(modelID)); recoverErr != nil {
+			log.Printf("account test temporary scheduling recovery failed: account_id=%d error=%v", accountID, recoverErr)
+		}
+	}()
 
 	// Synthetic UI load-test accounts exercise the real SSE parsing and modal
 	// interactions, but intentionally do not send their placeholder credentials

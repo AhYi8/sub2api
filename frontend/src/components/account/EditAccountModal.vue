@@ -1438,24 +1438,14 @@
               {{ t('admin.accounts.tempUnschedulable.hint') }}
             </p>
           </div>
-          <button
-            type="button"
-            @click="tempUnschedEnabled = !tempUnschedEnabled"
-            :class="[
-              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
-              tempUnschedEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
-            ]"
-          >
-            <span
-              :class="[
-                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
-                tempUnschedEnabled ? 'translate-x-5' : 'translate-x-0'
-              ]"
-            />
-          </button>
+          <select v-model="tempUnschedMode" class="input-field w-36">
+            <option value="inherit">{{ t('admin.accounts.tempUnschedulable.inherit') }}</option>
+            <option value="override">{{ t('admin.accounts.tempUnschedulable.override') }}</option>
+            <option value="disabled">{{ t('admin.accounts.tempUnschedulable.disabled') }}</option>
+          </select>
         </div>
 
-        <div v-if="tempUnschedEnabled" class="space-y-3">
+        <div v-if="tempUnschedMode === 'override'" class="space-y-3">
           <div class="rounded-lg bg-blue-50 p-3 dark:bg-blue-900/20">
             <p class="text-xs text-blue-700 dark:text-blue-400">
               <Icon name="exclamationTriangle" size="sm" class="mr-1 inline" :stroke-width="2" />
@@ -3633,13 +3623,13 @@ const antigravityModelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist'
 const antigravityWhitelistModels = ref<string[]>([])
 const antigravityModelMappings = ref<ModelMapping[]>([])
 const isSyncingAntigravityUpstream = ref(false)
-const tempUnschedEnabled = ref(false)
 const accountSchedulingThresholdOverrideEnabled = ref(false)
 const accountSchedulingThresholdOverrideValue = ref(100)
 const ACCOUNT_SCHEDULING_THRESHOLD_CREDENTIAL_KEY = 'account_scheduling_threshold'
 const supportsAccountSchedulingThresholdOverride = computed(() =>
   supportsAccountSchedulingThresholdOverridePlatform(props.account?.platform)
 )
+const tempUnschedMode = ref<'inherit' | 'override' | 'disabled'>('inherit')
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 const getModelMappingKey = createStableObjectKeyResolver<ModelMapping>('edit-model-mapping')
 const getOpenAICompactModelMappingKey = createStableObjectKeyResolver<ModelMapping>('edit-openai-compact-model-mapping')
@@ -4765,18 +4755,16 @@ const buildTempUnschedRules = (rules: TempUnschedRuleForm[]) => {
 }
 
 const applyTempUnschedConfig = (credentials: Record<string, unknown>) => {
-  if (!tempUnschedEnabled.value) {
-    delete credentials.temp_unschedulable_enabled
-    delete credentials.temp_unschedulable_rules
-    return true
-  }
+  delete credentials.temp_unschedulable_enabled
+  delete credentials.temp_unschedulable_rules
+  credentials.temp_unschedulable_mode = tempUnschedMode.value
+  if (tempUnschedMode.value !== 'override') return true
 
   const rules = buildTempUnschedRules(tempUnschedRules.value)
   if (rules.length === 0) {
     appStore.showError(t('admin.accounts.tempUnschedulable.rulesInvalid'))
     return false
   }
-
   credentials.temp_unschedulable_enabled = true
   credentials.temp_unschedulable_rules = rules
   return true
@@ -4846,7 +4834,16 @@ const applyAccountSchedulingThresholdOverridePatch = (
 }
 
 function loadTempUnschedRules(credentials?: Record<string, unknown>) {
-  tempUnschedEnabled.value = credentials?.temp_unschedulable_enabled === true
+  const explicitMode = credentials?.temp_unschedulable_mode
+  if (explicitMode === 'inherit' || explicitMode === 'override' || explicitMode === 'disabled') {
+    tempUnschedMode.value = explicitMode
+  } else if (credentials?.temp_unschedulable_enabled === true) {
+    tempUnschedMode.value = 'override'
+  } else if (Object.prototype.hasOwnProperty.call(credentials || {}, 'temp_unschedulable_enabled')) {
+    tempUnschedMode.value = 'disabled'
+  } else {
+    tempUnschedMode.value = 'inherit'
+  }
   const rawRules = credentials?.temp_unschedulable_rules
   if (!Array.isArray(rawRules)) {
     tempUnschedRules.value = []

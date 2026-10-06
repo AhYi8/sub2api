@@ -1031,6 +1031,20 @@ export default {
         securityWarning: 'Warning: This key provides full admin access. Keep it secure.',
         usage: 'Usage: Add to request header - x-api-key: <your-admin-api-key>'
       },
+      tempUnschedulablePolicy: {
+        title: 'Platform Temporary Unschedulable Policy',
+        description: 'Configure upstream error rules that temporarily pause account scheduling by platform. Accounts can inherit, override, or disable the policy.',
+        platform: 'Platform',
+        enabled: 'Enable policy',
+        rule: 'Rule {index}',
+        errorCode: 'Error code',
+        durationMinutes: 'Pause duration (minutes)',
+        keywords: 'Keywords (comma-separated)',
+        keywordsPlaceholder: 'For example: overloaded, rate limit',
+        ruleDescription: 'Description',
+        addRule: 'Add rule',
+        saved: 'Platform temporary unschedulable policy saved',
+      },
       overloadCooldown: {
         title: '529 Overload Cooldown',
         description: 'Configure account scheduling pause strategy when upstream returns 529 (overloaded)',

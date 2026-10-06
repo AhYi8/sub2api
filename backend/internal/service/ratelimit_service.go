@@ -127,6 +127,14 @@ func (s *RateLimitService) SetSettingService(settingService *SettingService) {
 	s.settingService = settingService
 }
 
+// EffectiveTempUnschedulableRules 返回账号最终生效的临时不可调度规则。
+func (s *RateLimitService) EffectiveTempUnschedulableRules(ctx context.Context, account *Account) ([]TempUnschedulableRule, bool) {
+	if s == nil || s.settingService == nil {
+		return EffectiveTempUnschedulableRules(ctx, nil, account)
+	}
+	return s.settingService.EffectiveTempUnschedulableRules(ctx, account)
+}
+
 // SetTokenCacheInvalidator 设置 token 缓存清理器（可选依赖）
 func (s *RateLimitService) SetTokenCacheInvalidator(invalidator TokenCacheInvalidator) {
 	s.tokenCacheInvalidator = invalidator
@@ -2365,13 +2373,19 @@ func (s *RateLimitService) HandleTempUnschedulable(ctx context.Context, account 
 	if account == nil {
 		return false
 	}
-	if account.IsPoolMode() && !account.IsCustomErrorCodesEnabled() {
-		return false
-	}
-	if !account.ShouldHandleErrorCode(statusCode) {
-		return false
-	}
 	ctx = withTempUnschedulableModel(ctx, requestedModel)
+
+	// 平台/账号最终规则独立于账号自定义错误码和 Pool Mode；只在没有
+	// 有效规则时保留 Pool Mode 的旧默认跳过语义。
+	_, hasEffectiveRules := s.EffectiveTempUnschedulableRules(ctx, account)
+	if !hasEffectiveRules {
+		if account.IsPoolMode() && !account.IsCustomErrorCodesEnabled() {
+			return false
+		}
+		if !account.ShouldHandleErrorCode(statusCode) {
+			return false
+		}
+	}
 	return s.tryTempUnschedulable(ctx, account, statusCode, responseBody, firstRequestedModel(requestedModel))
 }
 
@@ -2681,11 +2695,23 @@ type tempUnschedulableRuleMatch struct {
 	matchedKeyword string
 }
 
-func matchTempUnschedulableRules(account *Account, statusCode int, responseBody []byte) []tempUnschedulableRuleMatch {
-	if account == nil || !account.IsTempUnschedulableEnabled() || statusCode <= 0 || len(responseBody) == 0 {
+func matchTempUnschedulableRules(ctx context.Context, resolver interface {
+	EffectiveTempUnschedulableRules(context.Context, *Account) ([]TempUnschedulableRule, bool)
+}, account *Account, statusCode int, responseBody []byte) []tempUnschedulableRuleMatch {
+	if account == nil || statusCode <= 0 || len(responseBody) == 0 {
 		return nil
 	}
-	rules := account.GetTempUnschedulableRules()
+	var rules []TempUnschedulableRule
+	var enabled bool
+	if resolver != nil {
+		rules, enabled = resolver.EffectiveTempUnschedulableRules(ctx, account)
+	} else {
+		enabled = account.IsTempUnschedulableEnabled()
+		rules = account.GetTempUnschedulableRules()
+	}
+	if !enabled {
+		return nil
+	}
 	if len(rules) == 0 {
 		return nil
 	}
@@ -2712,7 +2738,7 @@ func (s *RateLimitService) tryTempUnschedulable(ctx context.Context, account *Ac
 	if account == nil {
 		return false
 	}
-	if !account.IsTempUnschedulableEnabled() {
+	if _, enabled := s.EffectiveTempUnschedulableRules(ctx, account); !enabled {
 		return false
 	}
 	// 401 首次命中可临时不可调度（给 token 刷新窗口）；
@@ -2732,7 +2758,7 @@ func (s *RateLimitService) tryTempUnschedulable(ctx context.Context, account *Ac
 			return false
 		}
 	}
-	for _, match := range matchTempUnschedulableRules(account, statusCode, responseBody) {
+	for _, match := range matchTempUnschedulableRules(ctx, s, account, statusCode, responseBody) {
 		if s.triggerTempUnschedulable(ctx, account, match.rule, match.ruleIndex, statusCode, match.matchedKeyword, responseBody, tempUnschedulableModel(ctx, requestedModel)) {
 			return true
 		}

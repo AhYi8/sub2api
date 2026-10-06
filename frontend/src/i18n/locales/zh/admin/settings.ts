@@ -1025,6 +1025,20 @@ export default {
         securityWarning: '警告：此密钥拥有完整的管理员权限，请妥善保管。',
         usage: '使用方法：在请求头中添加 x-api-key: <your-admin-api-key>'
       },
+      tempUnschedulablePolicy: {
+        title: '平台级临时不可调度策略',
+        description: '按平台配置触发临时不可调度的上游错误规则，账号可选择继承、覆盖或禁用。',
+        platform: '平台',
+        enabled: '启用策略',
+        rule: '规则 {index}',
+        errorCode: '错误码',
+        durationMinutes: '暂停时长（分钟）',
+        keywords: '关键词（逗号分隔）',
+        keywordsPlaceholder: '例如 overloaded, rate limit',
+        ruleDescription: '说明',
+        addRule: '添加规则',
+        saved: '平台临时不可调度策略保存成功',
+      },
       overloadCooldown: {
         title: '529 过载冷却',
         description: '配置上游返回 529（过载）时的账号调度暂停策略',

@@ -231,12 +231,14 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 	}
 
 	// 创建账号
+	credentials := SanitizeStoredCredentials(req.Platform, req.Credentials)
+	credentials = ApplyTempUnschedulableMode(credentials, "", true)
 	account := &Account{
 		Name:        req.Name,
 		Notes:       normalizeAccountNotes(req.Notes),
 		Platform:    req.Platform,
 		Type:        req.Type,
-		Credentials: SanitizeStoredCredentials(req.Platform, req.Credentials),
+		Credentials: credentials,
 		Extra:       prepareCodexFingerprintExtraForCreate(req.Platform, req.Type, req.Extra),
 		ProxyID:     req.ProxyID,
 		Concurrency: req.Concurrency,

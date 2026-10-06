@@ -304,6 +304,82 @@
             </div>
           </div>
 
+          <!-- 平台级临时不可调度策略 -->
+          <div class="card">
+            <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t("admin.settings.tempUnschedulablePolicy.title") }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.tempUnschedulablePolicy.description") }}
+              </p>
+            </div>
+            <div class="space-y-5 p-6">
+              <div class="flex flex-wrap items-end gap-4">
+                <div>
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.tempUnschedulablePolicy.platform") }}
+                  </label>
+                  <select v-model="tempUnschedulablePolicyPlatform" class="input min-w-48" @change="loadTempUnschedulablePolicy">
+                    <option v-for="platform in tempUnschedulablePolicyPlatforms" :key="platform" :value="platform">
+                      {{ platform }}
+                    </option>
+                  </select>
+                </div>
+                <div class="flex items-center gap-3 pb-2">
+                  <Toggle v-model="tempUnschedulablePolicyForm.enabled" />
+                  <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.tempUnschedulablePolicy.enabled") }}
+                  </span>
+                </div>
+              </div>
+              <div v-if="tempUnschedulablePolicyLoading" class="flex items-center gap-2 text-gray-500">
+                <div class="h-4 w-4 animate-spin rounded-full border-b-2 border-primary-600"></div>
+                {{ t("common.loading") }}
+              </div>
+              <template v-else>
+                <div class="space-y-3 border-t border-gray-100 pt-4 dark:border-dark-700">
+                  <div v-for="(rule, index) in tempUnschedulablePolicyForm.rules" :key="index" class="space-y-3 rounded border border-gray-200 p-4 dark:border-dark-700">
+                    <div class="flex items-center justify-between">
+                      <span class="text-sm font-medium text-gray-900 dark:text-white">
+                        {{ t("admin.settings.tempUnschedulablePolicy.rule", { index: index + 1 }) }}
+                      </span>
+                      <button type="button" class="btn btn-secondary btn-sm" @click="removeTempUnschedulablePolicyRule(index)">
+                        {{ t("common.delete") }}
+                      </button>
+                    </div>
+                    <div class="grid gap-3 md:grid-cols-3">
+                      <label class="text-sm text-gray-700 dark:text-gray-300">
+                        {{ t("admin.settings.tempUnschedulablePolicy.errorCode") }}
+                        <input v-model.number="rule.error_code" type="number" min="1" class="input mt-1 w-full" />
+                      </label>
+                      <label class="text-sm text-gray-700 dark:text-gray-300">
+                        {{ t("admin.settings.tempUnschedulablePolicy.durationMinutes") }}
+                        <input v-model.number="rule.duration_minutes" type="number" min="1" class="input mt-1 w-full" />
+                      </label>
+                      <label class="text-sm text-gray-700 dark:text-gray-300">
+                        {{ t("admin.settings.tempUnschedulablePolicy.keywords") }}
+                        <input v-model="rule.keywordsText" type="text" class="input mt-1 w-full" :placeholder="t('admin.settings.tempUnschedulablePolicy.keywordsPlaceholder')" />
+                      </label>
+                    </div>
+                    <label class="text-sm text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.tempUnschedulablePolicy.ruleDescription") }}
+                      <input v-model="rule.description" type="text" class="input mt-1 w-full" />
+                    </label>
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" @click="addTempUnschedulablePolicyRule">
+                    {{ t("admin.settings.tempUnschedulablePolicy.addRule") }}
+                  </button>
+                </div>
+                <div class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700">
+                  <button type="button" class="btn btn-primary btn-sm" :disabled="tempUnschedulablePolicySaving" @click="saveTempUnschedulablePolicy">
+                    {{ tempUnschedulablePolicySaving ? t("common.saving") : t("common.save") }}
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div>
+
           <!-- Rate Limit Cooldown (429) Settings -->
           <div class="card">
             <div
@@ -9058,6 +9134,7 @@ import type {
   WebSearchProviderConfig,
   WebSearchTestResult,
 } from "@/api/admin/settings";
+import type { TempUnschedulablePolicy, TempUnschedulableRule } from "@/types";
 import type {
   AdminGroup,
   LoginAgreementDocument,
@@ -9147,6 +9224,96 @@ type SettingsTab =
   | "email"
   | "backup";
 const activeTab = ref<SettingsTab>("general");
+
+interface TempUnschedulablePolicyRuleForm extends TempUnschedulableRule {
+  keywordsText: string;
+}
+
+const tempUnschedulablePolicyPlatforms = [...SCHEDULING_STRATEGY_PLATFORMS];
+const tempUnschedulablePolicyPlatform = ref<string>(tempUnschedulablePolicyPlatforms[0] || "anthropic");
+const tempUnschedulablePolicyLoading = ref(false);
+const tempUnschedulablePolicySaving = ref(false);
+const tempUnschedulablePolicyForm = reactive<{
+  enabled: boolean;
+  rules: TempUnschedulablePolicyRuleForm[];
+}>({
+  enabled: false,
+  rules: [],
+});
+
+function toTempUnschedulablePolicyRuleForm(rule: TempUnschedulableRule): TempUnschedulablePolicyRuleForm {
+  return {
+    error_code: Number(rule.error_code) || 0,
+    keywords: Array.isArray(rule.keywords) ? [...rule.keywords] : [],
+    duration_minutes: Number(rule.duration_minutes) || 1,
+    description: rule.description || "",
+    keywordsText: Array.isArray(rule.keywords) ? rule.keywords.join(", ") : "",
+  };
+}
+
+function applyTempUnschedulablePolicy(policy: TempUnschedulablePolicy): void {
+  tempUnschedulablePolicyForm.enabled = Boolean(policy.enabled);
+  tempUnschedulablePolicyForm.rules = (policy.rules || []).map(toTempUnschedulablePolicyRuleForm);
+}
+
+async function loadTempUnschedulablePolicy(): Promise<void> {
+  if (!tempUnschedulablePolicyPlatform.value) return;
+  tempUnschedulablePolicyLoading.value = true;
+  try {
+    const policy = await adminAPI.accounts.getTempUnschedulablePolicy(
+      tempUnschedulablePolicyPlatform.value,
+    );
+    applyTempUnschedulablePolicy(policy);
+  } catch (err: unknown) {
+    appStore.showError(extractI18nErrorMessage(err, t, "admin.settings", t("common.error")));
+  } finally {
+    tempUnschedulablePolicyLoading.value = false;
+  }
+}
+
+function addTempUnschedulablePolicyRule(): void {
+  tempUnschedulablePolicyForm.rules.push({
+    error_code: 429,
+    keywords: [],
+    duration_minutes: 5,
+    description: "",
+    keywordsText: "",
+  });
+}
+
+function removeTempUnschedulablePolicyRule(index: number): void {
+  tempUnschedulablePolicyForm.rules.splice(index, 1);
+}
+
+async function saveTempUnschedulablePolicy(): Promise<void> {
+  if (!tempUnschedulablePolicyPlatform.value) return;
+  tempUnschedulablePolicySaving.value = true;
+  try {
+    const policy: TempUnschedulablePolicy = {
+      enabled: tempUnschedulablePolicyForm.enabled,
+      rules: tempUnschedulablePolicyForm.rules.map((rule) => ({
+        error_code: Number(rule.error_code) || 0,
+        keywords: rule.keywordsText
+          .split(",")
+          .map((keyword) => keyword.trim())
+          .filter(Boolean),
+        duration_minutes: Number(rule.duration_minutes) || 1,
+        description: rule.description.trim(),
+      })),
+    };
+    const saved = await adminAPI.accounts.updateTempUnschedulablePolicy(
+      tempUnschedulablePolicyPlatform.value,
+      policy,
+    );
+    applyTempUnschedulablePolicy(saved);
+    appStore.showSuccess(t("admin.settings.tempUnschedulablePolicy.saved"));
+  } catch (err: unknown) {
+    appStore.showError(extractI18nErrorMessage(err, t, "admin.settings", t("common.error")));
+  } finally {
+    tempUnschedulablePolicySaving.value = false;
+  }
+}
+
 const settingsTabs = [
   { key: "general" as SettingsTab, icon: "home" as const },
   { key: "agreement" as SettingsTab, icon: "document" as const },
@@ -12958,6 +13125,7 @@ onMounted(() => {
   loadUpstreamBillingProbeSettings();
   loadOllamaCloudUsageSettings();
   loadOpenCodeGoUsageSettings();
+  loadTempUnschedulablePolicy();
   loadOverloadCooldownSettings();
   loadRateLimit429CooldownSettings();
   loadPanelRateLimitSettings();
