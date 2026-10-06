@@ -1438,11 +1438,12 @@
               {{ t('admin.accounts.tempUnschedulable.hint') }}
             </p>
           </div>
-          <select v-model="tempUnschedMode" class="input-field w-36">
-            <option value="inherit">{{ t('admin.accounts.tempUnschedulable.inherit') }}</option>
-            <option value="override">{{ t('admin.accounts.tempUnschedulable.override') }}</option>
-            <option value="disabled">{{ t('admin.accounts.tempUnschedulable.disabled') }}</option>
-          </select>
+          <Select
+            v-model="tempUnschedMode"
+            :options="tempUnschedModeOptions"
+            :aria-label="t('admin.accounts.tempUnschedulable.title')"
+            class="w-44 shrink-0"
+          />
         </div>
 
         <div v-if="tempUnschedMode === 'override'" class="space-y-3">
@@ -3630,6 +3631,11 @@ const supportsAccountSchedulingThresholdOverride = computed(() =>
   supportsAccountSchedulingThresholdOverridePlatform(props.account?.platform)
 )
 const tempUnschedMode = ref<'inherit' | 'override' | 'disabled'>('inherit')
+const tempUnschedModeOptions = computed(() => [
+  { value: 'inherit' as const, label: t('admin.accounts.tempUnschedulable.inherit') },
+  { value: 'override' as const, label: t('admin.accounts.tempUnschedulable.override') },
+  { value: 'disabled' as const, label: t('admin.accounts.tempUnschedulable.disabled') }
+])
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 const getModelMappingKey = createStableObjectKeyResolver<ModelMapping>('edit-model-mapping')
 const getOpenAICompactModelMappingKey = createStableObjectKeyResolver<ModelMapping>('edit-openai-compact-model-mapping')

@@ -2511,11 +2511,12 @@
               {{ t('admin.accounts.tempUnschedulable.hint') }}
             </p>
           </div>
-          <select v-model="tempUnschedMode" class="input-field w-36">
-            <option value="disabled">{{ t('admin.accounts.tempUnschedulable.disabled') }}</option>
-            <option value="inherit">{{ t('admin.accounts.tempUnschedulable.inherit') }}</option>
-            <option value="override">{{ t('admin.accounts.tempUnschedulable.override') }}</option>
-          </select>
+          <Select
+            v-model="tempUnschedMode"
+            :options="tempUnschedModeOptions"
+            :aria-label="t('admin.accounts.tempUnschedulable.title')"
+            class="w-44 shrink-0"
+          />
         </div>
 
         <div v-if="tempUnschedMode === 'override'" class="space-y-3">
@@ -4588,6 +4589,11 @@ const vertexClientEmail = ref('')
 const vertexLocation = ref('global')
 const vertexServiceAccountDragActive = ref(false)
 const tempUnschedMode = ref<'inherit' | 'override' | 'disabled'>('disabled')
+const tempUnschedModeOptions = computed(() => [
+  { value: 'disabled' as const, label: t('admin.accounts.tempUnschedulable.disabled') },
+  { value: 'inherit' as const, label: t('admin.accounts.tempUnschedulable.inherit') },
+  { value: 'override' as const, label: t('admin.accounts.tempUnschedulable.override') }
+])
 const tempUnschedEnabled = computed(() => tempUnschedMode.value === 'override')
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 const getModelMappingKey = createStableObjectKeyResolver<ModelMapping>('create-model-mapping')
