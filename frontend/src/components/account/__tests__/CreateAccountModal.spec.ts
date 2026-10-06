@@ -146,6 +146,30 @@ const ModelWhitelistSelectorStub = defineComponent({
   >models</button>`,
 })
 
+const SelectStub = defineComponent({
+  name: 'SelectStub',
+  props: {
+    modelValue: {
+      type: [String, Number, Boolean, null],
+      default: null,
+    },
+    options: {
+      type: Array,
+      default: () => [],
+    },
+  },
+  emits: ['update:modelValue'],
+  template: `<select
+    v-bind="$attrs"
+    :value="modelValue"
+    @change="$emit('update:modelValue', $event.target.value)"
+  >
+    <option v-for="option in options" :key="option.value" :value="option.value">
+      {{ option.label }}
+    </option>
+  </select>`,
+})
+
 function mountModal(groups: any[] = []) {
   return mount(CreateAccountModal, {
     props: { show: true, proxies: [], groups },
@@ -154,7 +178,7 @@ function mountModal(groups: any[] = []) {
         BaseDialog: BaseDialogStub,
         OAuthAuthorizationFlow: OAuthAuthorizationFlowStub,
         ConfirmDialog: true,
-        Select: true,
+        Select: SelectStub,
         Icon: true,
         PlatformIcon: true,
         ProxySelector: true,
@@ -1348,13 +1372,12 @@ describe('CreateAccountModal antigravity upstream batch creation', () => {
       .find((candidate) => candidate.attributes('placeholder') === 'https://cloudcode-pa.googleapis.com')
     await baseInput?.setValue('https://relay.example')
 
-    // 开启临时不可调度并添加一条 429 预设规则（开关为区块标题旁的无文本 toggle）
-    const toggle = wrapper
-      .findAll('div.mb-3')
-      .find((container) => container.text().includes('admin.accounts.tempUnschedulable.title'))
-      ?.find('button')
-    expect(toggle).toBeDefined()
-    await toggle?.trigger('click')
+    // 选择覆盖模式并添加一条 429 预设规则
+    const tempUnschedulableSelect = wrapper
+      .findAll('select')
+      .find((select) => select.attributes('aria-label') === 'admin.accounts.tempUnschedulable.title')
+    expect(tempUnschedulableSelect).toBeDefined()
+    await tempUnschedulableSelect?.setValue('override')
     await selectButtonByText(wrapper, '+ admin.accounts.tempUnschedulable.presets.rateLimitLabel')
 
     await wrapper.get('[data-testid="antigravity-upstream-api-keys-input"]').setValue('sk-a\nsk-b')
