@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/tidwall/gjson"
 )
@@ -2055,8 +2056,9 @@ func (s *RateLimitService) UpdateSessionWindow(ctx context.Context, account *Acc
 	s.samplePassiveUsageFromHeaders(ctx, account, headers)
 
 	// 如果状态为allowed且之前有限流，说明窗口已重置，清除限流状态
+	// （自动恢复路径，跳过管理员手动临时不可调度标记）
 	if status == "allowed" && account.IsRateLimited() {
-		if err := s.ClearRateLimit(ctx, account.ID); err != nil {
+		if err := s.clearRateLimit(ctx, account.ID, true); err != nil {
 			slog.Warn("rate_limit_clear_failed", "account_id", account.ID, "error", err)
 		}
 	}
@@ -2110,8 +2112,14 @@ func (s *RateLimitService) samplePassiveUsageFromHeaders(ctx context.Context, ac
 	}
 }
 
-// ClearRateLimit 清除账号的限流状态
+// ClearRateLimit 清除账号的限流状态（管理端入口：连同管理员手动临时不可调度标记一并清除）。
 func (s *RateLimitService) ClearRateLimit(ctx context.Context, accountID int64) error {
+	return s.clearRateLimit(ctx, accountID, false)
+}
+
+// clearRateLimit 清除限流状态。auto=true 供后台自动恢复路径（窗口重置、测试成功恢复）使用，
+// 跳过 "manual:" 前缀的管理员手动临时不可调度标记，避免手动标记被自动事件意外解除。
+func (s *RateLimitService) clearRateLimit(ctx context.Context, accountID int64, auto bool) error {
 	if err := s.accountRepo.ClearRateLimit(ctx, accountID); err != nil {
 		return err
 	}
@@ -2122,8 +2130,20 @@ func (s *RateLimitService) ClearRateLimit(ctx context.Context, accountID int64) 
 		return err
 	}
 	// 清除限流时一并清理临时不可调度状态，避免周限/窗口重置后仍被本地临时状态阻断。
-	if err := s.accountRepo.ClearTempUnschedulable(ctx, accountID); err != nil {
-		return err
+	// auto=true（自动恢复路径）时优先用 ClearTempUnschedulableAuto 跳过 "manual:" 手动标记；
+	// 仓储未实现该能力时回退到普通清除（仅测试桩会出现，真实仓储始终实现）。
+	var clearTempErr error
+	if auto {
+		if autoClearer, ok := s.accountRepo.(TempUnschedAutoClearRepo); ok {
+			_, clearTempErr = autoClearer.ClearTempUnschedulableAuto(ctx, accountID)
+		} else {
+			clearTempErr = s.accountRepo.ClearTempUnschedulable(ctx, accountID)
+		}
+	} else {
+		clearTempErr = s.accountRepo.ClearTempUnschedulable(ctx, accountID)
+	}
+	if clearTempErr != nil {
+		return clearTempErr
 	}
 	if s.tempUnschedCache != nil {
 		if err := s.tempUnschedCache.DeleteTempUnsched(ctx, accountID); err != nil {
@@ -2165,7 +2185,8 @@ func (s *RateLimitService) RecoverAccountState(ctx context.Context, accountID in
 	}
 
 	if hasRecoverableRuntimeState(account) {
-		if err := s.ClearRateLimit(ctx, accountID); err != nil {
+		// 测试成功触发的自动恢复，跳过管理员手动临时不可调度标记。
+		if err := s.clearRateLimit(ctx, accountID, true); err != nil {
 			return nil, err
 		}
 		result.ClearedRateLimit = true
@@ -2255,6 +2276,8 @@ func (s *RateLimitService) RecoverTemporarySchedulingStateAfterSuccess(ctx conte
 // 管理员配置的临时不可调度规则触发：triggerTempUnschedulable 写入的
 // reason 是带 status_code 的 TempUnschedState JSON；OAuth 401 冷却写入
 // 纯文本、手动禁用不占用该字段，均不会被误恢复。
+// 管理员手动标记（"manual:" 前缀）显式排除：不能依赖"前缀非合法 JSON"的
+// 偶然性豁免，防止未来 reason 格式变化导致手动标记被自动恢复误清。
 func isRuleTriggeredTempUnsched(account *Account) bool {
 	if account == nil || account.TempUnschedulableUntil == nil {
 		return false
@@ -2266,11 +2289,81 @@ func isRuleTriggeredTempUnsched(account *Account) bool {
 	if reason == "" {
 		return false
 	}
+	if strings.HasPrefix(reason, ManualTempUnschedReasonPrefix) {
+		return false
+	}
 	var state TempUnschedState
 	if err := json.Unmarshal([]byte(reason), &state); err != nil {
 		return false
 	}
 	return state.StatusCode > 0
+}
+
+// ManualTempUnschedReasonPrefix 管理员手动临时不可调度标记的 reason 前缀。
+// 自动恢复路径（ClearTempUnschedulableAuto）据此跳过手动标记；
+// 展示层应剥离该前缀后再呈现给用户。
+const ManualTempUnschedReasonPrefix = "manual:"
+
+// manualTempUnschedDefaultReason 手动设置且管理员未填写原因时的默认文案。
+const manualTempUnschedDefaultReason = "管理员手动设置"
+
+// TempUnschedOverrideRepo 手动覆盖写入能力（窄接口，仓储层实现）。
+type TempUnschedOverrideRepo interface {
+	SetTempUnschedulableOverride(ctx context.Context, id int64, until time.Time, reason string) error
+}
+
+// TempUnschedAutoClearRepo 自动恢复路径专用清除能力（窄接口，仓储层实现）：
+// 跳过 "manual:" 前缀的管理员手动标记；返回是否实际清除（手动标记未命中返回 false）。
+type TempUnschedAutoClearRepo interface {
+	ClearTempUnschedulableAuto(ctx context.Context, id int64) (bool, error)
+}
+
+// SetManualTempUnschedulable 管理端手动将账号置为临时不可调度。
+// durationMinutes 有效范围 1~10080（最长 7 天）；reason 可选（≤200 字符，超长截断）。
+// 手动值无条件覆盖现有自动冷却（即使更短）；后台自动恢复不会清除手动标记。
+func (s *RateLimitService) SetManualTempUnschedulable(ctx context.Context, accountID int64, durationMinutes int, reason string) (*Account, error) {
+	if durationMinutes < 1 || durationMinutes > 10080 {
+		return nil, infraerrors.BadRequest("INVALID_DURATION", "duration_minutes must be between 1 and 10080")
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = manualTempUnschedDefaultReason
+	}
+	if len([]rune(reason)) > 200 {
+		reason = string([]rune(reason)[:200])
+	}
+
+	overrider, ok := s.accountRepo.(TempUnschedOverrideRepo)
+	if !ok {
+		// 装配缺陷：仓储未实现手动覆盖写入能力，大声报错而不是静默降级。
+		// 服务端配置问题，用 5xx 语义而非 400，避免客户端误以为请求有误。
+		return nil, infraerrors.InternalServer("TEMP_UNSCHED_OVERRIDE_UNSUPPORTED", "account repository does not support manual temp-unschedulable override")
+	}
+
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+
+	until := time.Now().Add(time.Duration(durationMinutes) * time.Minute)
+	storedReason := ManualTempUnschedReasonPrefix + reason
+	if err := overrider.SetTempUnschedulableOverride(ctx, accountID, until, storedReason); err != nil {
+		return nil, err
+	}
+
+	// 使缓存中的旧自动状态失效，让状态查询回源 DB 展示手动原因。
+	if s.tempUnschedCache != nil {
+		if err := s.tempUnschedCache.DeleteTempUnsched(ctx, accountID); err != nil {
+			slog.Warn("manual_temp_unsched_cache_delete_failed", "account_id", accountID, "error", err)
+		}
+	}
+	s.notifyAccountSchedulingBlocked(account, until, reason)
+
+	updated, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 func (s *RateLimitService) ClearTempUnschedulable(ctx context.Context, accountID int64) error {

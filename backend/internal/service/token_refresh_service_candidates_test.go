@@ -21,6 +21,8 @@ type tokenRefreshCandidateRepo struct {
 	setErrorCalls         int
 	setTempUnschedCalls   int
 	clearTempCalls        int
+	autoClearCalls        int
+	autoClearResult       bool
 	lastTempUnschedReason string
 	listActiveCalls       int
 }
@@ -98,6 +100,14 @@ func (r *tokenRefreshCandidateRepo) ClearTempUnschedulable(context.Context, int6
 	return nil
 }
 
+// ClearTempUnschedulableAuto 模拟自动清除；autoClearResult 默认 false 需测试里显式置 true。
+func (r *tokenRefreshCandidateRepo) ClearTempUnschedulableAuto(_ context.Context, _ int64) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.autoClearCalls++
+	return r.autoClearResult, nil
+}
+
 type tokenRefreshTestRefresher struct {
 	err error
 }
@@ -115,7 +125,10 @@ func (r *tokenRefreshTestRefresher) Refresh(context.Context, *Account) (map[stri
 
 func TestTokenRefreshService_ProcessRefreshUsesOAuthRefreshCandidates(t *testing.T) {
 	future := time.Now().Add(10 * time.Minute)
+	// 该测试聚焦候选筛选与清除行为：桩实现了 Auto 清除能力，刷新成功路径会优先走它，
+	// 置 true 模拟"自动冷却被实际清除"（手动标记豁免场景见下方专项测试）。
 	repo := &tokenRefreshCandidateRepo{
+		autoClearResult: true,
 		accounts: []Account{
 			{
 				ID:          1,
@@ -197,7 +210,58 @@ func TestTokenRefreshService_ProcessRefreshUsesOAuthRefreshCandidates(t *testing
 	// Account 7 is paused (schedulable=false) but active: it must still be
 	// refreshed so its stored access_token does not silently expire.
 	require.ElementsMatch(t, []int64{1, 6, 7}, repo.updatedCredentialIDs)
-	require.Equal(t, 1, repo.clearTempCalls, "successful refresh should clear the OAuth 401 temp-unschedulable state")
+	require.Equal(t, 1, repo.autoClearCalls, "successful refresh should clear the OAuth 401 temp-unschedulable state via the auto clear path")
+}
+
+// 本文件的测试无 build tag，不能引用 unit 标签内的 runtimeBlockRecorder，故局部定义记录器。
+type tokenRefreshBlockRecorder struct {
+	clearedIDs []int64
+}
+
+func (r *tokenRefreshBlockRecorder) BlockAccountScheduling(*Account, time.Time, string) {}
+
+func (r *tokenRefreshBlockRecorder) ClearAccountSchedulingBlock(accountID int64) {
+	r.clearedIDs = append(r.clearedIDs, accountID)
+}
+
+// 刷新成功遇到管理员手动临时不可调度标记（"manual:" 前缀）时：
+// 走 Auto 清除、未实际清除则不得发"调度已恢复"通知，也不得走普通清除路径。
+func TestTokenRefreshService_ManualTempUnschedulableMarkSurvivesSuccessfulRefresh(t *testing.T) {
+	future := time.Now().Add(10 * time.Minute)
+	repo := &tokenRefreshCandidateRepo{
+		accounts: []Account{
+			{
+				ID:                      1,
+				Platform:                PlatformOpenAI,
+				Type:                    AccountTypeOAuth,
+				Status:                  StatusActive,
+				Schedulable:             true,
+				Credentials:             map[string]any{"refresh_token": "refresh-token"},
+				TempUnschedulableUntil:  &future,
+				TempUnschedulableReason: "manual:管理员手动设置",
+			},
+		},
+		// Auto 清除返回"未命中"（手动标记保留）
+		autoClearResult: false,
+	}
+	blocker := &tokenRefreshBlockRecorder{}
+	svc := &TokenRefreshService{
+		accountRepo:    repo,
+		candidatePager: repo,
+		registrations: []tokenRefreshRegistration{
+			{platform: PlatformOpenAI, refresher: &tokenRefreshTestRefresher{}},
+		},
+		refreshPolicy: DefaultBackgroundRefreshPolicy(),
+		cfg:           &config.TokenRefreshConfig{RefreshBeforeExpiryHours: 1, MaxRetries: 1},
+	}
+	svc.SetAccountRuntimeBlocker(blocker)
+
+	svc.processRefresh()
+
+	require.Equal(t, []int64{1}, repo.updatedCredentialIDs, "account credentials should still refresh")
+	require.Equal(t, 1, repo.autoClearCalls, "refresh success must route through the manual-exempt auto clear")
+	require.Zero(t, repo.clearTempCalls, "plain clear must not be used when the repo implements the auto clear capability")
+	require.Empty(t, blocker.clearedIDs, "manual temp-unschedulable mark surviving refresh must not emit a scheduling-cleared notification")
 }
 
 func TestTokenRefreshService_RefreshFailureDoesNotCallPrivacy(t *testing.T) {

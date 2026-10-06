@@ -2672,6 +2672,37 @@ func (h *AccountHandler) ResetQuota(c *gin.Context) {
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
 }
 
+// SetTempUnschedulableRequest 手动设置临时不可调度的请求体。
+type SetTempUnschedulableRequest struct {
+	// 时长（分钟），1~10080（最长 7 天）
+	DurationMinutes int    `json:"duration_minutes" binding:"required,gte=1,lte=10080"`
+	Reason          string `json:"reason" binding:"omitempty,max=200"`
+}
+
+// SetTempUnschedulable handles manually setting temporary unschedulable status
+// POST /api/v1/admin/accounts/:id/temp-unschedulable
+func (h *AccountHandler) SetTempUnschedulable(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+
+	var req SetTempUnschedulableRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	account, err := h.rateLimitService.SetManualTempUnschedulable(c.Request.Context(), accountID, req.DurationMinutes, req.Reason)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+}
+
 // GetTempUnschedulable handles getting temporary unschedulable status
 // GET /api/v1/admin/accounts/:id/temp-unschedulable
 func (h *AccountHandler) GetTempUnschedulable(c *gin.Context) {

@@ -14,6 +14,77 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// 手动覆盖写入：SQL 不能带"只能延长"守卫，且未命中任何行时必须返回账号不存在。
+func TestAccountRepository_SetTempUnschedulableOverride_HasNoExtendOnlyGuard(t *testing.T) {
+	exec := &recordingSQLExecutor{result: rowsAffectedResult(1)}
+	repo := newAccountRepositoryWithSQL(nil, exec, nil)
+	until := time.Now().Add(10 * time.Minute)
+
+	err := repo.SetTempUnschedulableOverride(context.Background(), 42, until, "manual:管理员手动设置")
+
+	require.NoError(t, err)
+	require.Contains(t, exec.execQueries[0], "UPDATE accounts")
+	normalized := normalizeSQLWhitespace(exec.execQueries[0])
+	require.Contains(t, normalized, "temp_unschedulable_until = $1")
+	// 核心语义：手动值无条件覆盖，不比较现有冷却时长
+	require.NotContains(t, normalized, "temp_unschedulable_until < $1")
+	require.NotContains(t, normalized, "temp_unschedulable_until IS NULL")
+	require.Equal(t, until, exec.execArgs[0][0])
+	require.Equal(t, "manual:管理员手动设置", exec.execArgs[0][1])
+	require.Equal(t, int64(42), exec.execArgs[0][2])
+}
+
+func TestAccountRepository_SetTempUnschedulableOverride_NoRowsAffectedReturnsNotFound(t *testing.T) {
+	exec := &recordingSQLExecutor{result: rowsAffectedResult(0)}
+	repo := newAccountRepositoryWithSQL(nil, exec, nil)
+
+	err := repo.SetTempUnschedulableOverride(context.Background(), 42, time.Now().Add(time.Minute), "manual:x")
+
+	require.ErrorIs(t, err, service.ErrAccountNotFound)
+	require.Len(t, exec.execQueries, 1)
+	require.NotContains(t, strings.Join(exec.execQueries, "\n"), "scheduler_outbox")
+}
+
+// 自动清除：SQL 必须跳过 "manual:" 前缀的管理员手动标记，并返回是否实际清除。
+func TestAccountRepository_ClearTempUnschedulableAuto_SkipsManualMarks(t *testing.T) {
+	exec := &recordingSQLExecutor{result: rowsAffectedResult(1)}
+	repo := newAccountRepositoryWithSQL(nil, exec, nil)
+
+	cleared, err := repo.ClearTempUnschedulableAuto(context.Background(), 42)
+
+	require.NoError(t, err)
+	require.True(t, cleared)
+	normalized := normalizeSQLWhitespace(exec.execQueries[0])
+	require.Contains(t, normalized, "UPDATE accounts")
+	require.Contains(t, normalized, "temp_unschedulable_until = NULL")
+	require.Contains(t, normalized, "temp_unschedulable_reason IS NULL OR temp_unschedulable_reason NOT LIKE 'manual:%'")
+}
+
+func TestAccountRepository_ClearTempUnschedulableAuto_NoRowsAffectedReturnsFalse(t *testing.T) {
+	exec := &recordingSQLExecutor{result: rowsAffectedResult(0)}
+	repo := newAccountRepositoryWithSQL(nil, exec, nil)
+
+	cleared, err := repo.ClearTempUnschedulableAuto(context.Background(), 42)
+
+	require.NoError(t, err)
+	require.False(t, cleared)
+	require.Len(t, exec.execQueries, 1)
+	require.NotContains(t, strings.Join(exec.execQueries, "\n"), "scheduler_outbox")
+}
+
+// 管理端清除：SQL 不带 manual 豁免条件，可清除手动标记。
+func TestAccountRepository_ClearTempUnschedulable_DoesNotSkipManualMarks(t *testing.T) {
+	exec := &recordingSQLExecutor{result: rowsAffectedResult(1)}
+	repo := newAccountRepositoryWithSQL(nil, exec, nil)
+
+	err := repo.ClearTempUnschedulable(context.Background(), 42)
+
+	require.NoError(t, err)
+	normalized := normalizeSQLWhitespace(exec.execQueries[0])
+	require.Contains(t, normalized, "UPDATE accounts")
+	require.NotContains(t, normalized, "manual:%")
+}
+
 func TestAccountRepository_SetTempUnschedulable_NoRowsAffectedDoesNotWriteOutbox(t *testing.T) {
 	exec := &recordingSQLExecutor{result: rowsAffectedResult(0)}
 	repo := newAccountRepositoryWithSQL(nil, exec, nil)

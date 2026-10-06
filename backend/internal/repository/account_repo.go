@@ -2638,6 +2638,65 @@ func (r *accountRepository) ClearTempUnschedulable(ctx context.Context, id int64
 	return nil
 }
 
+// SetTempUnschedulableOverride 管理端手动设置临时不可调度：与 SetTempUnschedulable 不同，
+// 不带"只能延长"守卫，手动值无条件覆盖现有冷却（即使比当前剩余时间短）。
+func (r *accountRepository) SetTempUnschedulableOverride(ctx context.Context, id int64, until time.Time, reason string) error {
+	result, err := r.sql.ExecContext(ctx, `
+		UPDATE accounts
+		SET temp_unschedulable_until = $1,
+			temp_unschedulable_reason = $2,
+			updated_at = NOW()
+		WHERE id = $3
+			AND deleted_at IS NULL
+	`, until, reason, id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected <= 0 {
+		return service.ErrAccountNotFound
+	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue temp unschedulable override failed: account=%d err=%v", id, err)
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return nil
+}
+
+// ClearTempUnschedulableAuto 供后台自动恢复路径（token 刷新成功、余额恢复、限流重置等）
+// 清除临时不可调度状态：跳过 reason 以 "manual:" 前缀标记的管理员手动标记，
+// 手动标记只能到期或由管理员主动清除（ClearTempUnschedulable）。
+// 返回是否实际清除了状态（手动标记未命中时返回 false），调用方据此决定是否发恢复通知。
+func (r *accountRepository) ClearTempUnschedulableAuto(ctx context.Context, id int64) (bool, error) {
+	result, err := r.sql.ExecContext(ctx, `
+		UPDATE accounts
+		SET temp_unschedulable_until = NULL,
+			temp_unschedulable_reason = NULL,
+			updated_at = NOW()
+		WHERE id = $1
+			AND deleted_at IS NULL
+			AND (temp_unschedulable_reason IS NULL OR temp_unschedulable_reason NOT LIKE 'manual:%')
+	`, id)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if affected <= 0 {
+		return false, nil
+	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue auto clear temp unschedulable failed: account=%d err=%v", id, err)
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return true, nil
+}
+
 func (r *accountRepository) ClearRateLimit(ctx context.Context, id int64) error {
 	_, err := r.client.Account.Update().
 		Where(dbaccount.IDEQ(id)).

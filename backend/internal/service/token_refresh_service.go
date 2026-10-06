@@ -1174,16 +1174,29 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 			s.notifyAccountSchedulingBlockCleared(account.ID)
 		}
 	}
-	// 刷新成功后清除临时不可调度状态（处理 OAuth 401 恢复场景）
+	// 刷新成功后清除临时不可调度状态（处理 OAuth 401 恢复场景）。
+	// 自动恢复路径：优先用 ClearTempUnschedulableAuto 跳过 "manual:" 前缀的管理员手动标记
+	// （手动标记只能到期或管理员主动解除）；未实际清除（手动标记保留）时不发恢复通知，
+	// 避免管理员收到误导性的"调度已恢复"。仓储未实现该能力时回退到普通清除（仅测试桩）。
 	if account.TempUnschedulableUntil != nil && time.Now().Before(*account.TempUnschedulableUntil) {
-		if clearErr := s.accountRepo.ClearTempUnschedulable(ctx, account.ID); clearErr != nil {
+		cleared := true
+		var clearErr error
+		if autoClearer, ok := s.accountRepo.(TempUnschedAutoClearRepo); ok {
+			cleared, clearErr = autoClearer.ClearTempUnschedulableAuto(ctx, account.ID)
+		} else {
+			clearErr = s.accountRepo.ClearTempUnschedulable(ctx, account.ID)
+		}
+		if clearErr != nil {
 			slog.Warn("token_refresh.clear_temp_unschedulable_failed",
 				"account_id", account.ID,
 				"error", clearErr,
 			)
-		} else {
+		} else if cleared {
 			slog.Info("token_refresh.cleared_temp_unschedulable", "account_id", account.ID)
 			s.notifyAccountSchedulingBlockCleared(account.ID)
+		} else {
+			slog.Info("token_refresh.skipped_clear_manual_temp_unschedulable", "account_id", account.ID)
+			// 手动标记仍在 DB 中，保持缓存原样即可（若缓存已过期会回源重建手动状态）。
 		}
 		// 同步清除 Redis 缓存，避免调度器读到过期的临时不可调度状态
 		if s.tempUnschedCache != nil {

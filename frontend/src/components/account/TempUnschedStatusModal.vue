@@ -98,7 +98,10 @@
             {{ t('admin.accounts.tempUnschedulable.errorMessage') }}
           </p>
           <div class="mt-2 rounded bg-gray-50 p-2 text-xs text-gray-700 dark:bg-dark-700 dark:text-gray-300">
-            {{ state?.error_message || '-' }}
+            <span v-if="isManualMark" class="badge badge-warning mr-1">
+              {{ t('admin.accounts.tempUnschedulable.manualBadge') }}
+            </span>
+            {{ errorMessageText }}
           </div>
         </div>
 
@@ -190,6 +193,20 @@ const ruleIndexDisplay = computed(() => {
 })
 
 const hasThresholdEvidence = computed(() => (state.value?.trigger_count || 0) > 1)
+
+// 后端用 "manual:" 前缀标记管理员手动设置；展示层剥离前缀并加手动徽标。
+const MANUAL_REASON_PREFIX = 'manual:'
+const isManualMark = computed(() => {
+  const message = state.value?.error_message || ''
+  return message.startsWith(MANUAL_REASON_PREFIX)
+})
+const errorMessageText = computed(() => {
+  const message = state.value?.error_message || ''
+  if (message.startsWith(MANUAL_REASON_PREFIX)) {
+    return message.slice(MANUAL_REASON_PREFIX.length) || '-'
+  }
+  return message || '-'
+})
 
 const triggerEvidenceText = computed(() => {
   const count = state.value?.trigger_count || 0

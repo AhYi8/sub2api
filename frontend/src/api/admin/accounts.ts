@@ -457,6 +457,25 @@ export async function resetTempUnschedulable(id: number): Promise<{ message: str
   return data
 }
 
+/**
+ * Manually set temporary unschedulable status
+ * @param id - Account ID
+ * @param durationMinutes - Duration in minutes (1-10080)
+ * @param reason - Optional reason (max 200 chars)
+ * @returns Updated account
+ */
+export async function setTempUnschedulable(
+  id: number,
+  durationMinutes: number,
+  reason?: string
+): Promise<Account> {
+  const { data } = await apiClient.post<Account>(
+    `/admin/accounts/${id}/temp-unschedulable`,
+    { duration_minutes: durationMinutes, reason: reason || '' }
+  )
+  return data
+}
+
 export async function getTempUnschedulablePolicy(platform: string): Promise<TempUnschedulablePolicy> {
   const { data } = await apiClient.get<{ platform: string; policy: TempUnschedulablePolicy }>(
     `/admin/settings/temp-unschedulable/${encodeURIComponent(platform)}`
@@ -1193,6 +1212,7 @@ export const accountsAPI = {
   resetAccountQuota,
   getTempUnschedulableStatus,
   resetTempUnschedulable,
+  setTempUnschedulable,
   getTempUnschedulablePolicy,
   updateTempUnschedulablePolicy,
   setSchedulable,
