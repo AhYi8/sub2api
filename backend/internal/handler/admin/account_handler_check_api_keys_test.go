@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -82,10 +83,12 @@ func TestCheckAPIKeysDuplicateRejectsInvalidPlatform(t *testing.T) {
 	require.False(t, svc.called)
 }
 
-// 上游 v0.2.8 新增的 minimax/opencode_go 同为 API Key 凭证平台，创建弹窗会对其
-// 发起查重；平台枚举若缺失会被前端 fail-closed 逻辑放大为无法建号（回归保护）。
-func TestCheckAPIKeysDuplicateAcceptsUpstreamCNPlatforms(t *testing.T) {
-	for _, platform := range []string{"minimax", "opencode_go"} {
+// 平台合法性以 domain 注册表为准（单一数据来源）：直接遍历注册表全部具体平台，
+// 未来新增平台登记后自动纳入本回归——历史上两次因 oneof 手抄枚举漏更
+// （v0.2.8 minimax/opencode_go、v0.2.15 typesafe/command_code/cline）
+// 被前端 fail-closed 查重放大为无法建号。
+func TestCheckAPIKeysDuplicateAcceptsAllRegisteredPlatforms(t *testing.T) {
+	for _, platform := range domain.ConcretePlatformIDs() {
 		svc := &checkAPIKeysAdminServiceStub{}
 		rec := postCheckAPIKeys(setupCheckAPIKeysRouter(svc), `{"platform":"`+platform+`","api_keys":["key-a"]}`)
 

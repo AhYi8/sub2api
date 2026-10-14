@@ -1112,9 +1112,11 @@ const (
 
 // CheckAPIKeysDuplicateRequest 创建账号前的 API Key 查重请求。
 type CheckAPIKeysDuplicateRequest struct {
-	// 平台枚举覆盖全部 API Key 凭证平台：上游 v0.2.8 新增 minimax/opencode_go，
-	// 缺失会被前端查重 fail-closed 逻辑放大为无法创建这两类账号。
-	Platform string   `json:"platform" binding:"required,oneof=anthropic openai gemini antigravity grok kimi zhipu deepseek minimax opencode_go"`
+	// concrete_platform 校验标签由平台清单（domain/platforms.go）驱动，
+	// 替代 binding oneof 手抄枚举——历史上两次因新增平台漏改枚举
+	// （v0.2.8 minimax/opencode_go、v0.2.15 typesafe/command_code/cline）
+	// 导致前端 fail-closed 查重把对应平台账号创建全部阻断。
+	Platform string   `json:"platform" binding:"required,concrete_platform"`
 	APIKeys  []string `json:"api_keys" binding:"required,min=1,dive,required"`
 }
 
